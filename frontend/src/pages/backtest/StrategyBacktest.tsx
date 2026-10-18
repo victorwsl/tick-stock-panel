@@ -1658,6 +1658,11 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     <div className="h-full min-h-0 overflow-hidden rounded-card border border-border bg-surface/80 grid grid-cols-1 xl:grid-cols-[18rem_minmax(0,1fr)]">
       {/* 配置面板 */}
       <section className="space-y-3 border-b xl:border-b-0 xl:border-r border-border bg-base/25 px-3 py-3 xl:overflow-y-auto">
+        {selectedStrategy === 'personal_zhixing_pullback_v0' && (
+          <div role="status" className="rounded-btn border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-xs leading-relaxed text-amber-400">
+            信号试验版：白黄线、回调再转强及收盘计划盈亏比已接入。半仓退出、开盘重新计算盈亏比、公司行动账本尚未验收；当前曲线不能用于实盘决策。
+          </div>
+        )}
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs font-medium text-secondary">选择策略</label>

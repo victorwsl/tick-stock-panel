@@ -280,6 +280,9 @@ export interface KlineRow {
   close: number
   volume?: number
   change_pct?: number
+  zx_white?: number | null
+  zx_yellow?: number | null
+  zx_long?: number | null
   ma5?: number | null
   ma20?: number | null
   ma60?: number | null

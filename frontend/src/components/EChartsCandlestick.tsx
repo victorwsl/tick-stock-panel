@@ -11,6 +11,9 @@ export interface OHLC {
   low: number
   close: number
   volume?: number
+  zx_white?: number | null
+  zx_yellow?: number | null
+  zx_long?: number | null
   ma5?: number | null
   ma10?: number | null
   ma20?: number | null
@@ -483,7 +486,7 @@ function buildOption(
 ): EChartsOption {
   const candleData = data.map(d => [d.open, d.close, d.low, d.high])
 
-  const hasMA = showMA && data.some(d => d.ma5 != null || d.ma10 != null || d.ma20 != null || d.ma60 != null)
+  const hasMA = showMA && data.some(d => d.zx_white != null || d.ma5 != null || d.ma10 != null || d.ma20 != null || d.ma60 != null)
 
   const markPointData: any[] = []
   if (markers && markers.length > 0) {
@@ -690,14 +693,20 @@ function buildOption(
     const maLine = (key: keyof OHLC, color: string, name: string) => ({
       name, type: 'line',
       data: data.map(d => (d[key] != null ? Number(d[key]) : '-')),
-      smooth: true, symbol: 'none', animation: false,
+      smooth: false, symbol: 'none', animation: false,
       silent: true,
       lineStyle: { width: 1, color }, itemStyle: { color },
     })
-    series.push(maLine('ma5', THEME.ma5, 'MA5'))
-    series.push(maLine('ma10', THEME.ma10, 'MA10'))
-    series.push(maLine('ma20', THEME.ma20, 'MA20'))
-    series.push(maLine('ma60', THEME.ma60, 'MA60'))
+    if (data.some(d => d.zx_white != null)) {
+      series.push(maLine('zx_white', getTheme() === 'dark' ? '#f4f4f5' : '#374151', '知行白线'))
+      series.push(maLine('zx_yellow', getTheme() === 'dark' ? '#facc15' : '#9a6700', '知行黄线'))
+      series.push(maLine('zx_long', '#c026d3', '长期MA114'))
+    } else {
+      series.push(maLine('ma5', THEME.ma5, 'MA5'))
+      series.push(maLine('ma10', THEME.ma10, 'MA10'))
+      series.push(maLine('ma20', THEME.ma20, 'MA20'))
+      series.push(maLine('ma60', THEME.ma60, 'MA60'))
+    }
   }
 
   // 加入自选日标注: 蓝色竖虚线从该根K线的下沿连到主图底端的「自选」标签。
@@ -1029,10 +1038,16 @@ export function EChartsCandlestick({
     // 第二行: MA + BOLL
     if (showMA) {
       html += `<div style="display:flex;align-items:center;gap:10px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;min-height:20px;flex-wrap:wrap">`
-      if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
-      if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
-      if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
-      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
+      if (d.zx_white != null) {
+        html += `<span style="color:${CT().text}">白线:${Number(d.zx_white).toFixed(2)}</span>`
+        if (d.zx_yellow != null) html += `<span style="color:${getTheme() === 'dark' ? '#facc15' : '#9a6700'}">黄线:${Number(d.zx_yellow).toFixed(2)}</span>`
+        if (d.zx_long != null) html += `<span style="color:#c026d3">长期114:${Number(d.zx_long).toFixed(2)}</span>`
+      } else {
+        if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
+        if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
+        if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
+        if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
+      }
       if (d.boll_upper != null && activeIndicators.includes('boll')) {
         html += `<span style="color:#E879F9">BOLL:${Number(d.boll_upper).toFixed(2)}/${Number(d.ma20).toFixed(2)}/${Number(d.boll_lower).toFixed(2)}</span>`
       }
@@ -1305,10 +1320,16 @@ export function EChartsCandlestick({
     html += `</div>`
     if (showMA) {
       html += `<div style="display:flex;align-items:center;gap:10px;padding:0 8px;font:11px 'JetBrains Mono',monospace;min-height:20px;flex-wrap:wrap">`
-      if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
-      if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
-      if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
-      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
+      if (d.zx_white != null) {
+        html += `<span style="color:${CT().text}">白线:${Number(d.zx_white).toFixed(2)}</span>`
+        if (d.zx_yellow != null) html += `<span style="color:${getTheme() === 'dark' ? '#facc15' : '#9a6700'}">黄线:${Number(d.zx_yellow).toFixed(2)}</span>`
+        if (d.zx_long != null) html += `<span style="color:#c026d3">长期114:${Number(d.zx_long).toFixed(2)}</span>`
+      } else {
+        if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
+        if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
+        if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
+        if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
+      }
       if (d.boll_upper != null && activeIndicators.includes('boll')) {
         html += `<span style="color:#E879F9">BOLL:${Number(d.boll_upper).toFixed(2)}/${Number(d.ma20).toFixed(2)}/${Number(d.boll_lower).toFixed(2)}</span>`
       }
