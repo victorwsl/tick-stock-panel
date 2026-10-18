@@ -1828,6 +1828,8 @@ export interface StrategyBacktestTrade {
 }
 
 export interface StrategyBacktestResult {
+  history_id?: string
+  history_error?: string
   run_id: string
   config: Record<string, any>
   stats: Record<string, any>
@@ -3334,6 +3336,9 @@ export const api = {
     request<{ ok: boolean }>(`/api/backtest/candidates/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+
+  strategyBacktestHistory: () => request<{ items: { id: string; saved_at: string; name: string; start: string; end: string; trade_count: number; asset_type: string; mode: string }[]; unavailable: number }>('/api/backtest/strategy/history'),
+  strategyBacktestHistoryResult: (id: string) => request<StrategyBacktestResult>(`/api/backtest/strategy/history/${encodeURIComponent(id)}`),
 
   strategyBacktestRun: (payload: {
     strategy_id: string

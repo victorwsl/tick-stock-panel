@@ -10,11 +10,13 @@ from datetime import date, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.market_time import cn_today
+from app.services.backtest_history import list_results, load_result, save_result
 from app.services.backtest import (
     BacktestConfig,
     BacktestService,
@@ -414,7 +416,23 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
     from app.services.heavy_job_limiter import shared_heavy_job_limiter
 
     with shared_heavy_job_limiter.slot("normal"):
-        return run_worker_task(task)
+        result = run_worker_task(task)
+        return save_result(settings.data_dir, result, jsonable_encoder(asdict(cfg)))
+
+
+@router.get("/strategy/history")
+def strategy_history():
+    return list_results(settings.data_dir)
+
+
+@router.get("/strategy/history/{history_id}")
+def strategy_history_result(history_id: str):
+    try:
+        return load_result(settings.data_dir, history_id)
+    except FileNotFoundError:
+        raise HTTPException(404, detail="历史回测不存在")
+    except (OSError, ValueError):
+        raise HTTPException(500, detail="历史回测读取失败，请检查记录文件")
 
 
 # ── SSE 流式回测 (实时进度 + 可取消 + 支持重连) ───────────────────
@@ -639,6 +657,7 @@ async def strategy_stream(
                             lambda d: job.progress.append(d),
                             job.cancel_event,
                         )
+                    result = save_result(settings.data_dir, result, jsonable_encoder(asdict(cfg)))
                     _finish_job(job, result=result)
                 except HeavyJobCancelledError:
                     _finish_job(job, error="回测已取消")

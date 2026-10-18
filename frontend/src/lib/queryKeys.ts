@@ -51,6 +51,7 @@ export const QK = {
   limitLadder:          (asOf?: string) => ['limit-ladder', asOf] as const,
 
   // Backtest
+  backtestHistory:      ['backtest-history'] as const,
   backtestStatus:       ['backtest-status'] as const,
   backtestCandidates:   ['backtest-candidates'] as const,
   factorColumns:        ['backtest-factor-columns'] as const,

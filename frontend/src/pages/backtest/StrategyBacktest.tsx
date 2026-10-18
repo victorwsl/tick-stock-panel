@@ -31,6 +31,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { WarmupBadge } from '@/components/WarmupBadge'
 import { DatePicker } from '@/components/DatePicker'
 import { toast } from '@/components/Toast'
+import { BacktestHistory } from './components/BacktestHistory'
 import { StrategyNavChart } from './charts/StrategyNavChart'
 import { ReturnDistributionChart } from './charts/ReturnDistributionChart'
 import { TradeKlineModal, type TradeNavSource } from './components/TradeKlineModal'
@@ -1018,10 +1019,8 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   // 稳定回调: 配合 memo(StrategyParamInput), 单参数修改只重渲对应行
   const handleStrategyParamChange = useCallback((pid: string, v: any) => setStrategyParams(prev => ({ ...prev, [pid]: v })), [])
   const [overrides, setOverrides] = useState<Record<string, any>>(saved?.overrides ?? {})
-  // result 不从 localStorage 恢复:它是运行产物(净值/交易),大且易过时,
-  // 跨会话/拉新代码后自动渲染一个可能对应已失效策略的旧结果会造成困惑
-  // (切页不卸载组件,内存中的 result 仍保留,无需靠 localStorage 恢复)。
-  const [result, setResult] = useState<StrategyBacktestResult | null>(null)
+  // 兼容浏览器尚存的旧结果；新结果从后端磁盘历史恢复。
+  const [result, setResult] = useState<StrategyBacktestResult | null>(saved?.result ?? null)
 
   // 候选方案「载入复测」: 把保存的 23 项回测配置回填到表单 (字段缺失时保留当前值)
   useEffect(() => {
@@ -1099,15 +1098,13 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   ), [strategyGroup, strategyList])
   // 校验 localStorage 里保存的上次选中策略是否仍存在(本地开发残留的自定义策略
   // 拉新代码后会失效,导致 strategyGet 一直 404/加载中)。列表就绪后若失效,
-  // 连带清除其专属的 params/overrides/result(这些是该策略的运行配置/产物,
-  // 策略失效后留着会造成"孤儿"状态:界面显示旧回测结果却无对应策略)。
+  // 清除过期表单参数，但保留可独立审阅的历史结果。
   useEffect(() => {
     if (strategies.isLoading || strategyList.length === 0) return
     if (selectedStrategy && !strategyList.some(st => st.id === selectedStrategy)) {
       setSelectedStrategy(null)
       setStrategyParams({})
       setOverrides({})
-      setResult(null)
     }
   }, [strategies.isLoading, strategyList, selectedStrategy])
 
@@ -1225,7 +1222,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
         strategyConfigSignature: strategyDetail.data
           ? strategyBacktestConfigSignature(strategyDetail.data)
           : undefined,
-        result: backtestTask.result,
+        result: null, // 完整结果由后端保存，避免浏览器存储配额丢失
       })
     }
   }, [backtestTask])
@@ -2055,6 +2052,13 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 
       {/* 结果面板 */}
       <section className="min-w-0 space-y-3 bg-base/15 px-3 py-3 xl:overflow-y-auto">
+        <BacktestHistory result={result} pending={isPending} onLoad={loaded => {
+          setResult(loaded)
+          setResultTab('daily')
+          setDailyPage(0)
+          setTradePage(0)
+          setChartOverlay(null)
+        }} />
         {/* 模式切换: 仓位模拟 / 全量模拟 */}
         <div className="flex items-center justify-between gap-2">
           <div className="inline-flex rounded-btn border border-border bg-surface/80 p-0.5 shadow-sm">
