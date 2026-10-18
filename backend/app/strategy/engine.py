@@ -904,6 +904,22 @@ class StrategyEngine:
         as_of = context.as_of
         overrides = overrides or {}
         params = self.resolve_params(s, params, overrides)
+        if s.meta.get("personal_joinquant_smallcap"):
+            from app.services.personal_joinquant import scan
+            return scan(settings.data_dir, as_of, params, pool, overrides)
+
+        if s.meta.get("personal_dividend_variant") in {"strict", "daily_local"}:
+            from app.services.personal_dividend import scan
+            return scan(settings.data_dir, strategy_id, s.meta["personal_dividend_variant"],
+                        as_of, params, pool, overrides, s)
+
+        if s.meta.get("personal_graham_variant") in {"s0", "s1", "s2"}:
+            if any(v is not None and v != [] and v != {} for k, v in overrides.items() if k != "params"):
+                raise ValueError("Graham研究不支持额外信号、评分或交易覆盖，请恢复默认参数")
+            from app.services.personal_graham import scan
+            return scan(settings.data_dir, strategy_id, s.meta["personal_graham_variant"],
+                        as_of, params, pool)
+
         entry_signals = self._effective_signals(overrides, "entry_signals", s.entry_signals)
         exit_signals = self._effective_signals(overrides, "exit_signals", s.exit_signals)
         overlay_conditions = self._effective_overlay(overrides)

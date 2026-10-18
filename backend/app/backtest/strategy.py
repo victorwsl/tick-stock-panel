@@ -1148,6 +1148,18 @@ class StrategyBacktestService:
         except ValueError as e:
             return _err(str(e))
 
+        if s.meta.get("personal_joinquant_smallcap"):
+            from app.services.personal_joinquant import run_backtest
+            return run_backtest(self, config, s, progress_cb, cancel_event, result_policy)
+
+        if s.meta.get("personal_dividend_variant") in {"strict", "daily_local"}:
+            from app.services.personal_dividend import run_backtest
+            return run_backtest(self, config, s, progress_cb, cancel_event, result_policy)
+
+        if s.meta.get("personal_graham_variant") in {"s0", "s1", "s2"}:
+            from app.services.personal_graham import run_backtest
+            return run_backtest(self, config, s, progress_cb, cancel_event, result_policy)
+
         params = self._normalize_params(config.params or {}, s)
         overrides = config.overrides or {}
         # 同回测 run 路径: 挖掘运行期也要按资产类型中和股票专属过滤键 (#215)
