@@ -1804,6 +1804,10 @@ export interface ResearchCandidateCreate {
 
 // ===== Strategy Backtest =====
 export interface StrategyBacktestTrade {
+  planned_stop?: number | null
+  planned_target?: number | null
+  planned_rr?: number | null
+  planned_risk_pct?: number | null
   symbol: string
   name?: string
   entry_date: string

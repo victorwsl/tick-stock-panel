@@ -395,6 +395,8 @@ const useSignalNames = useCustomSignalNames
 function ExitReasonBadge({ reason, signalId, signalNames }: { reason: string; signalId?: string | null; signalNames?: Record<string, string> }) {
   const config: Record<string, { label: string; cls: string }> = {
     signal: { label: '信号', cls: 'bg-accent/10 text-accent border-accent/30' },
+    three_day_weak: { label: '三日未达5%', cls: 'bg-amber-400/10 text-amber-400 border-amber-400/30' },
+    white_not_reclaimed: { label: '白线未收复', cls: 'bg-orange-400/10 text-orange-400 border-orange-400/30' },
     stop_loss: { label: '止损', cls: 'bg-red-500/10 text-red-400 border-red-500/30' },
     take_profit: { label: '止盈', cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
     trailing_stop: { label: '移损', cls: 'bg-orange-500/10 text-orange-400 border-orange-500/30' },
@@ -1647,6 +1649,8 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     ['buy_no_slot', '满仓未买'],
     ['buy_exposure', '仓位上限'],
     ['buy_score_filter', '评分过滤'],
+    ['buy_planned_risk', '开盘风险超过上限'],
+    ['buy_planned_rr', '开盘计划盈亏比不足'],
     ['buy_limit_up', '涨停未买'],
     ['buy_suspended', '停牌未买'],
     ['sell_limit_down', '跌停阻塞'],
@@ -1661,6 +1665,19 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     <div className="h-full min-h-0 overflow-hidden rounded-card border border-border bg-surface/80 grid grid-cols-1 xl:grid-cols-[18rem_minmax(0,1fr)]">
       {/* 配置面板 */}
       <section className="space-y-3 border-b xl:border-b-0 xl:border-r border-border bg-base/25 px-3 py-3 xl:overflow-y-auto">
+        {selectedStrategy === 'personal_zhixing_early_v0' && (
+          <div role="status" className="rounded-btn border border-accent/30 bg-accent/10 px-2 py-2 text-xs leading-relaxed text-secondary">
+            <div className="font-medium text-foreground">回调试仓 · 三日验证</div>
+            <ol className="list-decimal pl-4 space-y-1">
+              <li>白高于黄，J≤20且收盘守黄线，不等再转强。</li>
+              <li>次日开盘复算：含成本风险≤{strategyParams.max_risk_pct ?? 3}%、计划盈亏比≥{strategyParams.min_rr ?? 3}。</li>
+              <li>成交日D0，D3收盘涨幅不足5%，D4开盘退出。</li>
+              <li>通过后持有；跌破白线，次日仍未站回，再下一开盘退出。</li>
+              <li>结构止损持续有效，跳空损失可能超过3%。</li>
+            </ol>
+            <p className="mt-1 text-muted">买卖均选次日开盘，关闭分钟细化及额外退出覆盖。胜率50%、实际盈亏比≥3是研究目标，账户完整验收尚未通过。</p>
+          </div>
+        )}
         {selectedStrategy === 'personal_zhixing_pullback_v0' && (
           <div role="status" className="rounded-btn border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-xs leading-relaxed text-amber-400">
             信号试验版：白黄线、回调再转强及收盘计划盈亏比已接入。半仓退出、开盘重新计算盈亏比、公司行动账本尚未验收；当前曲线不能用于实盘决策。

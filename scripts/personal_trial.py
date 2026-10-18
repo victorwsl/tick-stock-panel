@@ -52,8 +52,9 @@ def main():
         print(json.dumps(review_strategy(data_dir, date.fromisoformat(args.start), date.fromisoformat(args.end)), ensure_ascii=False, indent=2))
         return
     if args.action == "install-strategy":
-        from app.services.personal_zhixing import install_strategy
-        print(json.dumps(install_strategy(data_dir), ensure_ascii=False, indent=2))
+        from app.services.personal_zhixing import install_strategy, install_early_strategy
+        print(json.dumps({"baseline": install_strategy(data_dir),
+                          "early": install_early_strategy(data_dir)}, ensure_ascii=False, indent=2))
         return
     if args.action == "import-financial":
         from app.services.personal_local_financials import import_financials

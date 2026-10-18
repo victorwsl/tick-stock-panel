@@ -463,6 +463,8 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
         "polars",
         "numpy",
         "app.backtest.matrix",
+        "app.backtest.pullback_rules",  # 纯持仓规则，无文件或网络接口
+        "app.strategy.personal.zhixing_pullback",  # 共用知行计算，无副作用
         "app.strategy.research.factor_rank_research",
         "app.strategy.market_data",   # 新增: 策略可读取指数/ETF 日K
         "datetime",

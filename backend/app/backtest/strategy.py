@@ -843,6 +843,8 @@ class StrategyBacktestService:
                     f"叠加回测暂仅支持矩阵子策略; {child.strategy_id!r} "
                     f"是 {child_def.execution_backend}"
                 )
+            if getattr(child_def.matrix_strategy, "build_pullback_trade_rules", None) is not None:
+                raise ValueError("回调试仓依赖实际持仓验证，暂不能作为叠加策略子策略")
             if child_def.matrix_strategy is None:
                 raise ValueError(f"子策略 {child.strategy_id!r} 未注册矩阵策略")
             # 加载子策略的用户 override(参数/评分等), 保证回测与单独跑子策略同口径。
@@ -1203,6 +1205,14 @@ class StrategyBacktestService:
             overrides.get("score_min"),
             overrides.get("score_max"),
         )
+
+        pullback_builder = getattr(s.matrix_strategy, "build_pullback_trade_rules", None)
+        if pullback_builder is not None:
+            if config.entry_fill != "open_t+1" or config.exit_fill != "open_t+1" or config.minute_fill:
+                return _err("回调试仓仅支持日线收盘确认、次日开盘买卖，请把建仓和清仓都设为次日开盘，并关闭分钟细化")
+            if any(value is not None for value in (stop_loss, take_profit, trailing_stop,
+                    trailing_take_profit_activate, trailing_take_profit_drawdown, max_hold_days)):
+                return _err("回调试仓使用独立结构止损和三日验证，请清空额外止盈、止损、移动止盈及最长持仓覆盖")
 
         if config.regime_filter and config.regime_filter.get("amv"):
             if config.entry_fill != "open_t+1" or s.execution_backend == "minute_filter":
@@ -1586,6 +1596,9 @@ class StrategyBacktestService:
                         )
             except (TypeError, ValueError) as e:
                 return _err(f"矩阵策略信号计算失败: {e}")
+
+            if pullback_builder is not None:
+                matcher_config.pullback_rules = pullback_builder(market_data, params, start_id, stop_id)
 
             sim_market_data = slice_market_data_matrix(market_data, start_id, stop_id)
             sim_signal_matrix = slice_signal_matrix(signal_matrix, start_id, stop_id)
@@ -2673,6 +2686,8 @@ class StrategyBacktestService:
             "pnl_pct": t.pnl_pct,
             "duration": t.duration,
             "exit_reason": t.exit_reason,
+            "planned_stop": t.planned_stop, "planned_target": t.planned_target,
+            "planned_rr": t.planned_rr, "planned_risk_pct": t.planned_risk_pct,
             "shares": t.shares,
             "lots": t.lots,
             "position_pct": t.position_pct,

@@ -37,3 +37,22 @@ it('回放保留触发日与成交日差异，合并同日记录，区分期末�
     expect(markers.find((m: any) => m.kind === 'sell' && m.phase === 'signal').label).toContain('待卖')
   } finally { await act(async () => root.unmount()) }
 })
+
+
+it('回调试仓显示计划盈亏比和可读退出原因', async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  const host = document.createElement('div'), root = createRoot(host)
+  const trade = {symbol:'600000.SH', entry_date:'2025-01-03', entry_signal_date:'2025-01-02',
+    entry_price:10, exit_date:'2025-01-09',exit_signal_date:'2025-01-08',exit_price:10.3,
+    exit_reason:'three_day_weak', entry_signal_id:'zx_early_pullback',
+    planned_stop:9.8, planned_target:11., planned_rr:4., planned_risk_pct:.02} as StrategyBacktestTrade
+  try {
+    await act(async () => root.render(<PicksSymbolKlineModal symbol="600000.SH"
+      periodStart="2025-01-01" periodEnd="2025-02-01" onClose={() => {}}
+      result={{trades:[trade],per_symbol_stats:[]} as unknown as StrategyBacktestResult} />))
+    const markers = captured.props.markers
+    expect(markers.find((m: any) => m.date==='2025-01-02').detail).toContain('回调试仓')
+    expect(markers.find((m: any) => m.date==='2025-01-03').detail).toContain('计划盈亏比 4.00')
+    expect(markers.find((m: any) => m.date==='2025-01-09').label).toContain('三日涨幅不足5%')
+  } finally { await act(async () => root.unmount()) }
+})

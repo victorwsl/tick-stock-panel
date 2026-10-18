@@ -68,11 +68,13 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
 
   const markers = useMemo<ChartMarker[]>(() => {
     const reasons: Record<string, string> = {
+      three_day_weak: '三日涨幅不足5%', white_not_reclaimed: '跌破白线次日未收复',
       stop_loss: '止损', take_profit: '止盈', trailing_stop: '移动止损',
       trailing_take_profit: '回撤止盈', max_hold: '持有到期',
       pending_exit: '待卖', end: '期末退出', signal: '退出信号',
     }
     const signalName = (id: string | null | undefined, fallback: string) => {
+      if (id === 'zx_early_pullback') return '回调试仓'
       if (id === 'zx_below_white') return '跌破白线'
       if (id === 'zx_pullback_restrength') return '回调再转强'
       return id ? cnSignal(id, signalNames) : fallback
@@ -93,7 +95,7 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
         ? signalName(t.exit_signal_id, '退出信号')
         : reasons[t.exit_reason] ?? t.exit_reason
       add(t.entry_signal_date, 'buy', 'signal', entry, `买入信号：${entry}`)
-      add(t.entry_date, 'buy', 'fill', '', `买入成交 ${fmtPrice(t.entry_price)}；信号日 ${t.entry_signal_date || '未记录'}`)
+      add(t.entry_date, 'buy', 'fill', '', `买入成交 ${fmtPrice(t.entry_price)}；信号日 ${t.entry_signal_date || '未记录'}${t.planned_rr != null ? `；计划止损 ${fmtPrice(t.planned_stop!)}；前高 ${fmtPrice(t.planned_target!)}；含成本计划盈亏比 ${t.planned_rr.toFixed(2)}` : ''}`)
       // 期末退出是回测边界操作，不冒充策略退出触发；待卖仅画已记录的触发。
       if (t.exit_reason !== 'end') add(t.exit_signal_date, 'sell', 'signal', exit, `退出触发：${exit}`)
       if (t.exit_reason === 'pending_exit') continue

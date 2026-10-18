@@ -25,6 +25,7 @@ from app.backtest.matrix import (
     build_market_matrix,
     load_market_data_matrix_from_parquet,
 )
+from app.backtest.pullback_rules import PullbackTradeRules
 from app.config import settings
 from app.enriched_generation import EnrichedGenerationUnavailableError
 from app.parquet import scan_enriched_parquet
@@ -63,6 +64,7 @@ class MatcherConfig:
     trailing_take_profit_activate_pct: float | None = None
     trailing_take_profit_drawdown_pct: float | None = None
     max_hold_days: int | None = None
+    pullback_rules: PullbackTradeRules | None = None
     max_positions: int = 10
     max_exposure_pct: float = 1.0
     score_min: float | None = None
@@ -122,6 +124,10 @@ class TradeRecord:
     # 仅当该腿由信号触发时填充, 止损/止盈/到期等非信号退出时 exit_signal_id 为 None。
     entry_signal_id: str | None = None
     exit_signal_id: str | None = None
+    planned_stop: float | None = None
+    planned_target: float | None = None
+    planned_rr: float | None = None
+    planned_risk_pct: float | None = None
 
 
 @dataclass
@@ -982,6 +988,8 @@ class BacktestEngine:
             high_price = float(matrix.high[time_id, asset_id])
             peak_price = float(pos["max_high"])
             lines: list[tuple[float, str]] = []
+            if config.pullback_rules is not None:
+                lines.append((pos["planned_stop"], "stop_loss"))
             if config.stop_loss_pct is not None:
                 lines.append((entry_price * (1 - abs(config.stop_loss_pct)), "stop_loss"))
             if config.trailing_stop_pct is not None:
@@ -1074,6 +1082,8 @@ class BacktestEngine:
                 entry_value=round(float(entry_value), 2),
                 exit_value=round(float(exit_value), 2),
                 pnl_amount=round(float(pnl_amount), 2),
+                planned_stop=pos.get("planned_stop"), planned_target=pos.get("planned_target"),
+                planned_rr=pos.get("planned_rr"), planned_risk_pct=pos.get("planned_risk_pct"),
                 entry_score=round(float(pos["entry_score"]), 2),
                 entry_signal_date=pos["entry_signal_date"],
                 exit_signal_date=signal_date,
@@ -1119,8 +1129,16 @@ class BacktestEngine:
                 _count("sell_no_future")
                 continue
             entry_price = _refill(time_id, asset_id, "buy", float(entry_prices[time_id, asset_id]))
+            terms = {}
+            if config.pullback_rules is not None:
+                terms, blocked = config.pullback_rules.entry_terms(
+                    int(matrix.entry_signal_time[time_id, asset_id]), asset_id,
+                    entry_price, buy_cost_pct, sell_cost_pct)
+                if terms is None:
+                    _count(blocked)
+                    continue
             entry_date = matrix.timestamp_labels[time_id][:10]
-            pos = {
+            pos = {**terms,
                 "entry_time": time_id,
                 "entry_date": entry_date,
                 "entry_signal_date": _signal_date(
@@ -1162,6 +1180,12 @@ class BacktestEngine:
                 if reason and _try_close(pos, future, asset_id, reason, signal_date):
                     closed = True
                     break
+                if config.pullback_rules is not None:
+                    reason = config.pullback_rules.close_reason(pos, future, asset_id,
+                        float(matrix.close[future, asset_id]), bool(matrix.tradable[future, asset_id]))
+                    if reason:
+                        pos['pending_exit_reason'] = reason
+                        pos['pending_exit_signal_date'] = date_text
                 high_price = float(matrix.high[future, asset_id])
                 if _valid_price(high_price):
                     pos["max_high"] = max(float(pos["max_high"]), high_price)
@@ -1990,6 +2014,8 @@ class BacktestEngine:
                 entry_value=round(float(pos["entry_value"]), 2),
                 exit_value=round(float(exit_value), 2),
                 pnl_amount=round(float(pnl_amount), 2),
+                planned_stop=pos.get("planned_stop"), planned_target=pos.get("planned_target"),
+                planned_rr=pos.get("planned_rr"), planned_risk_pct=pos.get("planned_risk_pct"),
                 entry_score=round(float(pos["entry_score"]), 2),
                 entry_signal_date=pos["entry_signal_date"],
                 exit_signal_date=signal_date,
@@ -2071,6 +2097,8 @@ class BacktestEngine:
                 entry_price = float(pos["entry_price"])
                 peak_price = float(pos["max_high"])
                 risk_lines: list[tuple[float, str]] = []
+                if config.pullback_rules is not None:
+                    risk_lines.append((pos["planned_stop"], "stop_loss"))
                 if config.stop_loss_pct is not None:
                     risk_lines.append((entry_price * (1 - abs(config.stop_loss_pct)), "stop_loss"))
                 if config.trailing_stop_pct is not None:
@@ -2086,7 +2114,7 @@ class BacktestEngine:
                     override = None
                     if _valid_price(open_price) and open_price <= stop_price:
                         override = open_price
-                    elif _valid_price(low_price) and low_price <= stop_price:
+                    elif config.pullback_rules is None and _valid_price(low_price) and low_price <= stop_price:
                         override = stop_price
                     if override is not None:
                         _try_sell(time_id, asset_id, reason, date_text, sold_today, override)
@@ -2171,6 +2199,14 @@ class BacktestEngine:
                             entry_price = _refill_price(
                                 time_id, asset_id, "buy", float(entry_prices[time_id, asset_id])
                             )
+                            terms = {}
+                            if config.pullback_rules is not None:
+                                terms, blocked = config.pullback_rules.entry_terms(
+                                    int(matrix.entry_signal_time[time_id, asset_id]), asset_id,
+                                    entry_price, buy_cost_pct, sell_cost_pct)
+                                if terms is None:
+                                    _count(blocked)
+                                    continue
                             shares = np.floor(allocation / (entry_price * (1 + buy_cost_pct)) / 100) * 100
                             entry_value = shares * entry_price * (1 + buy_cost_pct)
                             if shares <= 0:
@@ -2183,7 +2219,8 @@ class BacktestEngine:
                                 _count("buy_exposure")
                                 continue
                             cash -= entry_value
-                            positions[asset_id] = {
+                            positions[asset_id] = {**terms,
+                                "entry_time": time_id,
                                 "entry_date": date_text,
                                 "entry_signal_date": _signal_date(
                                     int(matrix.entry_signal_time[time_id, asset_id]), date_text
@@ -2205,6 +2242,21 @@ class BacktestEngine:
                                 "pending_exit_next_open": False,
                                 "blocked_exit_days": 0,
                             }
+
+            if config.pullback_rules is not None:
+                for asset_id in list(positions):
+                    pos = positions[asset_id]
+                    if pos.get('pending_exit_reason') or not matrix.tradable[time_id, asset_id]:
+                        continue
+                    # T+1: a new position cannot execute even an intraday stop today.
+                    if pos['entry_time'] < time_id and matrix.low[time_id, asset_id] <= pos['planned_stop']:
+                        _try_sell(time_id, asset_id, 'stop_loss', date_text, sold_today, pos['planned_stop'])
+                        continue
+                    reason = config.pullback_rules.close_reason(pos, time_id, asset_id,
+                        float(matrix.close[time_id, asset_id]), bool(matrix.tradable[time_id, asset_id]))
+                    if reason:
+                        pos['pending_exit_reason'] = reason
+                        pos['pending_exit_signal_date'] = date_text
 
             for asset_id, pos in positions.items():
                 high_price = float(matrix.high[time_id, asset_id])
