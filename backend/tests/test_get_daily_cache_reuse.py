@@ -1,7 +1,7 @@
 """get_daily 复用 enriched 历史缓存的等价性测试。
 
 个股对话框打开时 /api/kline/daily 每个行情 tick 调用一次; 旧路径每次
-150 天扫描 + 全套指标重算, 新路径优先从预计算历史缓存裁剪。
+历史扫描 + 全套指标重算, 新路径在预热足够时从预计算历史缓存裁剪。
 本测试证明: 同一份数据下两条路径输出逐列一致, 且缓存命中时不触发扫描。
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ SYM = "600001.SH"
 
 
 def _raw_frame(days: int = 80) -> pl.DataFrame:
-    """构造 ~57 个交易日的 14 列形态数据 (复权价与原始价一致, 无除权)。"""
+    """构造指定数量交易日的形态数据 (复权价与原始价一致, 无除权)。"""
     base = date(2026, 4, 1)
     rows = []
     price = 10.0
@@ -62,9 +62,9 @@ def _bare_repo(raw: pl.DataFrame) -> tuple[KlineRepository, dict]:
 
 
 def test_get_daily_cache_path_matches_scan_path():
-    raw = _raw_frame()
+    raw = _raw_frame(260)
     dates = raw["date"].to_list()
-    start, end = dates[30], dates[-1]
+    start, end = dates[200], dates[-1]
 
     # 旧路径: 无历史缓存 → 扫描 + 即时计算
     repo_old, calls_old = _bare_repo(raw)
@@ -104,3 +104,18 @@ def test_get_daily_falls_back_to_scan_when_cache_does_not_cover_start():
     result = repo.get_daily(SYM, dates[0] - timedelta(days=5), dates[-1])
     assert calls["scan"] == 1
     assert not result.is_empty()
+
+
+def test_get_daily_short_cache_recomputes_full_zhixing_warmup():
+    raw = _raw_frame(260)
+    start, end = raw['date'][220], raw['date'][-1]
+    repo, calls = _bare_repo(raw)
+    short = repo._compute_enriched_range(raw.tail(80))
+    repo._enriched_history_cache = short
+    repo._enriched_history_start = short['date'].min()
+    result = repo.get_daily(SYM, start, end)
+    assert calls['scan'] == 1
+    assert result['zx_yellow'].null_count() == 0
+    expected = repo._compute_enriched_range(raw).filter(pl.col('date') >= start)
+    assert_frame_equal(result.select('date', 'zx_white', 'zx_yellow'),
+        expected.select('date', 'zx_white', 'zx_yellow'), check_exact=False, rel_tol=1e-9)

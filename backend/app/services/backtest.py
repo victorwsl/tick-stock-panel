@@ -148,6 +148,34 @@ def _build_max_hold_exits(entries: pd.DataFrame, max_hold_days: int) -> pd.DataF
     return out
 
 
+def _vbt_profit_factor(trades, group_by=None):
+    """与vectorbt定义相同；复制数组后填空，兼容pandas Copy-on-Write。"""
+    wins = np.atleast_1d(np.asarray(trades.winning.pnl.sum(group_by=group_by), dtype=float)).copy()
+    losses = np.atleast_1d(np.asarray(trades.losing.pnl.sum(group_by=group_by), dtype=float)).copy()
+    has_values = np.atleast_1d(np.asarray(trades.count(group_by=group_by))) > 0
+    wins[np.isnan(wins) & has_values] = 0.
+    losses[np.isnan(losses) & has_values] = 0.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        values = wins / np.abs(losses)
+    return trades.wrapper.wrap_reduced(values, group_by=group_by, name_or_index="profit_factor")
+
+
+def _vbt_expectancy(trades, group_by=None):
+    win_rate = np.atleast_1d(np.asarray(trades.win_rate(group_by=group_by), dtype=float))
+    avg_win = np.atleast_1d(np.asarray(trades.winning.pnl.mean(group_by=group_by), dtype=float)).copy()
+    avg_loss = np.atleast_1d(np.asarray(trades.losing.pnl.mean(group_by=group_by), dtype=float)).copy()
+    has_values = np.atleast_1d(np.asarray(trades.count(group_by=group_by))) > 0
+    avg_win[np.isnan(avg_win) & has_values] = 0.
+    avg_loss[np.isnan(avg_loss) & has_values] = 0.
+    values = win_rate * avg_win - (1 - win_rate) * np.abs(avg_loss)
+    return trades.wrapper.wrap_reduced(values, group_by=group_by, name_or_index="expectancy")
+
+
+def _vbt_metric_settings():
+    return {"profit_factor": {"calc_func": _vbt_profit_factor, "resolve_trades": True},
+            "expectancy": {"calc_func": _vbt_expectancy, "resolve_trades": True}}
+
+
 class BacktestService:
     def __init__(self, repo: KlineRepository) -> None:
         self.repo = repo
@@ -332,7 +360,7 @@ class BacktestService:
 
         # 提取结果
         try:
-            stats_series = pf.stats(silence_warnings=True)
+            stats_series = pf.stats(silence_warnings=True, metric_settings=_vbt_metric_settings())
             if isinstance(stats_series, pd.DataFrame):
                 # 多列时取 agg
                 stats_dict = stats_series.mean(numeric_only=True).to_dict()
@@ -412,6 +440,7 @@ class BacktestService:
 def _config_to_dict(c: BacktestConfig) -> dict:
     return {
         "symbols": c.symbols,
+        "asset_type": c.asset_type,
         "start": str(c.start),
         "end": str(c.end),
         "entries": c.entries,

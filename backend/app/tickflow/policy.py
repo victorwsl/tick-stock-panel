@@ -298,7 +298,7 @@ def detect_capabilities(force: bool = False) -> CapabilitySet:
     取数函数内部会按 preferences.get_*_data_provider() 分流到对应数据源,
     不会错误调用 TickFlow。
     """
-    capset = _detect_tickflow_caps(force)
+    capset = CapabilitySet() if settings.personal_local_only else _detect_tickflow_caps(force)
     _augment_custom_sources(capset)
     return capset
 

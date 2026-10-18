@@ -16,6 +16,7 @@ import os
 from tickflow import AsyncTickFlow, TickFlow
 
 from app import secrets_store
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ def _base_url() -> str | None:
 
 def get_client() -> TickFlow:
     """同步客户端。能力探测、盘后管道用。"""
+    if settings.personal_local_only:
+        raise RuntimeError("本地研究模式禁止 TickFlow 在线取数或回退")
     global _sync_client
     if _sync_client is None:
         key = secrets_store.get_tickflow_key()
@@ -70,6 +73,8 @@ def get_client() -> TickFlow:
 
 def get_async_client() -> AsyncTickFlow:
     """异步客户端。FastAPI 请求路径上用。"""
+    if settings.personal_local_only:
+        raise RuntimeError("本地研究模式禁止 TickFlow 在线取数或回退")
     global _async_client
     if _async_client is None:
         key = secrets_store.get_tickflow_key()
@@ -88,6 +93,8 @@ def get_paid_realtime_client() -> TickFlow | None:
     none/free 的历史日K仍走 get_client() 的 free-api；实时行情全部走付费服务器。
     Free 档如果有有效 key，也使用这里的 paid endpoint 调按标的实时接口。
     """
+    if settings.personal_local_only:
+        raise RuntimeError("本地研究模式禁止 TickFlow 在线取数或回退")
     global _paid_realtime_client
     key = secrets_store.get_tickflow_key()
     if not key:

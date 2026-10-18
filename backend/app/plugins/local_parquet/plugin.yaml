@@ -1,0 +1,7 @@
+name: local_parquet
+display_name: "本地 Parquet"
+runtime: python
+entry: app.plugins.local_parquet.provider:LocalParquetProvider
+check: app.plugins.local_parquet.provider:availability
+datasets: [daily, adj_factor, financial]
+description: "只读本地股票/ETF/指数与独立采集缓存，缺数明确报错；累计复权因子转换为事件因子，不在线回退。"

@@ -696,6 +696,7 @@ def test_codex_cli_available_false_when_command_missing(monkeypatch):
 @pytest.mark.asyncio
 async def test_codex_exec_args_exclude_ephemeral(monkeypatch):
     """exec 参数不含 --ephemeral: 老版本 codex(如 0.58)无此参数, 传了直接报错。"""
+    monkeypatch.setattr(ai_provider.settings, "personal_local_only", False)
     captured: dict = {}
 
     def fake_run_process(args, prompt, env, timeout):

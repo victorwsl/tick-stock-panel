@@ -662,7 +662,7 @@ class KlineRepository:
                 from app.indicators.pipeline import compute_enriched_history_window
                 start_full = latest - timedelta(days=300)
                 read_cols = [c for c in ["symbol", "date", "open", "high", "low", "close",
-                                         "volume", "amount", "raw_close", "raw_high", "raw_low"]
+                                         "volume", "amount", "raw_close", "raw_high", "raw_low", "exchange_pre_close"]
                              if c in df_latest.columns]
                 lf = (
                     scan_enriched_parquet(self._enriched_glob)
@@ -1527,8 +1527,8 @@ class KlineRepository:
                             df = pl.concat([df.select(common_cols), cached_part.select(common_cols)])
                 return df
 
-        # 扩展范围用于指标预热 (MA60 需要 ~60 交易日 ≈ 120 日历日)
-        warmup_start = start - timedelta(days=150)
+        # 知行黄线需要114交易日；留400日历日供均线和双EMA预热。
+        warmup_start = start - timedelta(days=400)
 
         # 优先复用预计算 enriched 历史缓存 (300 天全指标, 与回测引擎同源):
         # 个股对话框打开时本接口每个行情 tick 被调一次, 逐请求 150 天扫描 + 全套
@@ -1540,11 +1540,12 @@ class KlineRepository:
             hist_min = self._enriched_history_start
             hist_max = hist["date"].max()
             if hist_min is not None and hist_min <= start and hist_max >= start:
-                df = hist.filter(
-                    (pl.col("symbol") == symbol)
-                    & (pl.col("date") >= start)
-                    & (pl.col("date") <= end)
-                )
+                symbol_history = hist.filter(pl.col("symbol") == symbol)
+                # 缓存从最近300日播种；请求开头仍须有足够有效行供知行线预热。
+                if symbol_history.filter(pl.col("date") < start).height >= 200:
+                    df = symbol_history.filter(
+                        (pl.col("date") >= start) & (pl.col("date") <= end)
+                    )
         if df.is_empty():
             # 扫描14列 parquet
             df = self._scan_daily_symbol(symbol, warmup_start, end, None)
@@ -1634,7 +1635,7 @@ class KlineRepository:
             if not df.is_empty() and all(c in df.columns for c in columns):
                 return df
 
-        warmup_start = start - timedelta(days=150)
+        warmup_start = start - timedelta(days=400)
         df = self._scan_index_daily_symbol(symbol, warmup_start, end, None)
         if not df.is_empty():
             df = self._compute_index_enriched_range(df)
@@ -1661,7 +1662,7 @@ class KlineRepository:
             if not df.is_empty() and all(c in df.columns for c in columns):
                 return df
 
-        warmup_start = start - timedelta(days=150)
+        warmup_start = start - timedelta(days=400)
         df = self._scan_etf_daily_symbol(symbol, warmup_start, end, None)
         if df.is_empty():
             # 旧版 ETF 曾存入 kline_index_enriched；没有独立数据时回退读取。

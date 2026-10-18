@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     # AI 助手工具轮次检查点: 连续 N 轮工具调用未完成时弹「继续/停止」卡; 0=不检查。
     ai_round_checkpoint: int = 100
 
+    # 个人本地试用：关闭自动取数与 TickFlow 回退，默认不影响上游行为。
+    personal_local_only: bool = False
+
     # Server
     host: str = "0.0.0.0"
     port: int = 3018

@@ -504,6 +504,7 @@ export function MiningWorkbench() {
     setDraft(current => ({
       ...current,
       assetType,
+      stampTaxBps: assetType === 'etf' ? '0' : '5',
       strategyIds: [],
     }))
   }

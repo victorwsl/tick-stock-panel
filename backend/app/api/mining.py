@@ -109,6 +109,8 @@ class MiningStartRequest(BaseModel):
 
     @model_validator(mode="after")
     def _date_range(self) -> MiningStartRequest:
+        if self.asset_type == "etf" and "stamp_tax_pct" not in self.model_fields_set:
+            self.stamp_tax_pct = 0.0
         if self.start is not None and self.end is not None and self.start > self.end:
             raise ValueError("start must not be after end")
         return self
@@ -149,6 +151,8 @@ class MiningAutoStartRequest(BaseModel):
 
     @model_validator(mode="after")
     def _date_range(self) -> MiningAutoStartRequest:
+        if self.asset_type == "etf" and "stamp_tax_pct" not in self.model_fields_set:
+            self.stamp_tax_pct = 0.0
         if self.start is not None and self.end is not None and self.start > self.end:
             raise ValueError("start must not be after end")
         return self

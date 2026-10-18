@@ -236,6 +236,14 @@ def _read_ext_rows(data_dir, config: ExtConfig, dimension_field: str) -> list[di
 def _dimension_values(raw: Any) -> list[str]:
     if raw is None:
         return []
+    # JSON字符串数组保留名称中的空格与斜线，例如AI PC、DRG/DIP。
+    if isinstance(raw, str) and raw.lstrip().startswith("["):
+        try:
+            items = json.loads(raw)
+            if isinstance(items, list) and all(isinstance(v, str) for v in items):
+                return list(dict.fromkeys(v.strip() for v in items if v.strip()))
+        except ValueError:
+            pass
     values = [
         v.strip()
         for v in _DIMENSION_SEP.split(str(raw).strip())

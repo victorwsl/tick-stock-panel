@@ -208,6 +208,15 @@ def _sync_history_table_for_symbols(
     与 shares 同一模式。若改为 latest_only 全量覆盖, 历史各期会在每次同步时
     被冲掉, 财务因子将永远只有单期快照, 任何回测都是未来函数。
     """
+    from app.config import settings
+    from app.services import preferences
+    if settings.personal_local_only and preferences.get_financial_provider() == "local_parquet":
+        # 本地源是完整只读历史，不能套用按报告期合并而丢失公告版本。
+        from app.data_providers import custom as custom_sources
+        if table == "shares":
+            return get_financial_df(data_dir, table).height
+        frame = custom_sources.get_provider("local_parquet").get_financials(table, None, latest_only=False)
+        return _write_table(table, frame, data_dir)
     existing = get_financial_df(data_dir, table)
     if existing.is_empty() or not {"symbol", "period_end"} <= set(existing.columns):
         return _sync_table(table, symbols, data_dir, capset, latest_only=False)
@@ -302,7 +311,14 @@ def get_financial_df(data_dir: Path, table: str) -> pl.DataFrame:
     if not path.exists():
         return pl.DataFrame()
     try:
-        return pl.read_parquet(path)
+        frame = pl.read_parquet(path)
+        # 本地副本保留每次公告供研究；展示与AI每个报告期只取最新公告。
+        # 财务因子直接读取原文件，不经过此展示视图。
+        if ("source" in frame.columns and "announce_date" in frame.columns
+                and frame["source"].drop_nulls().unique().to_list() == ["local_tushare"]):
+            frame = frame.sort(["symbol", "period_end", "announce_date"], descending=[False, True, True])
+            frame = frame.unique(["symbol", "period_end"], keep="first", maintain_order=True)
+        return frame
     except Exception as e:
         logger.warning("读取 financials/%s 失败: %s", table, e)
         return pl.DataFrame()

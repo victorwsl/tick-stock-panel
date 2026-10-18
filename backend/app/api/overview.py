@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import re
 import threading
 import time
 from datetime import date
@@ -36,9 +35,6 @@ def invalidate_overview_cache() -> None:
         _cache = None
         _cache_key = None
         _cache_ts = 0.0
-
-
-_DIMENSION_SEP = re.compile(r"[、,，;；|/\s]+")
 
 
 def _dimension_field(config: ExtConfig, kind: str) -> str | None:
@@ -93,10 +89,8 @@ def _read_ext_rows(data_dir, config: ExtConfig, dimension_field: str) -> list[di
 
 
 def _dimension_values(raw: Any) -> list[str]:
-    if raw is None:
-        return []
-    values = [v.strip() for v in _DIMENSION_SEP.split(str(raw).strip()) if v.strip()]
-    return values
+    from app.services.market_overview_builder import _dimension_values as parse_values
+    return parse_values(raw)
 
 
 def _symbol_keys(row: dict, config: ExtConfig) -> list[str]:

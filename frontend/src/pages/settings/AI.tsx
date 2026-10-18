@@ -49,7 +49,7 @@ const CODEX_PROVIDER = 'codex_cli'
 const OPENAI_PROVIDER = 'openai'
 const OPENAI_COMPAT_PROVIDER = 'openai_compat'
 const CODEX_COMMAND = 'codex'
-const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
+const DEFAULT_CODEX_MODEL = 'gpt-6.1-sol'
 const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh'
 const DEFAULT_OPENAI_MODEL = 'gpt-5.5'
 const DEFAULT_REASONING_EFFORT = 'high'
@@ -62,7 +62,8 @@ const CODEX_REASONING_LABELS: Record<string, string> = {
 type CodexModelOption = { label: string; value: string; model: string; effort: string; hint: string }
 
 const CODEX_MODEL_OPTIONS: CodexModelOption[] = [
-  { label: 'GPT-5.6 Sol · 极高（推荐）', value: 'gpt-5.6-sol:xhigh', model: 'gpt-5.6-sol', effort: 'xhigh', hint: '旗舰档，适合复杂金融分析与专业任务' },
+  { label: 'GPT-6.1 Sol · 极高（推荐）', value: 'gpt-6.1-sol:xhigh', model: 'gpt-6.1-sol', effort: 'xhigh', hint: '固定调用 gpt-6.1-sol；是否可用以本机连通性测试为准' },
+  { label: 'GPT-5.6 Sol · 极高', value: 'gpt-5.6-sol:xhigh', model: 'gpt-5.6-sol', effort: 'xhigh', hint: '旗舰档，适合复杂金融分析与专业任务' },
   { label: 'GPT-5.6 Terra · 极高', value: 'gpt-5.6-terra:xhigh', model: 'gpt-5.6-terra', effort: 'xhigh', hint: '平衡智能、速度与使用成本' },
   { label: 'GPT-5.6 Luna · 极高', value: 'gpt-5.6-luna:xhigh', model: 'gpt-5.6-luna', effort: 'xhigh', hint: '适合成本敏感与高频分析任务' },
   { label: 'gpt-5.5 · 高', value: 'gpt-5.5:high', model: 'gpt-5.5', effort: 'high', hint: '使用 gpt-5.5 + high 推理档' },

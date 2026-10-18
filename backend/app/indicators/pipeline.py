@@ -117,6 +117,7 @@ ENRICHED_STORAGE_COLS = [
     "turnover_rate",                           # 依赖当时的 float_shares, 不可回推
     "consecutive_limit_ups",                   # 递推状态, 需从历史 cum_sum
     "consecutive_limit_downs",
+    "exchange_pre_close",                      # 可选：交易所当日涨跌幅参考价（非复权昨收）
     "quote_ts",                                # 行情时间戳(ms): 盘后校验/量比折算/跨天完整性
 ]
 
@@ -334,6 +335,7 @@ _INDICATOR_DEPS: dict[str, set[str]] = {
 # compute_indicators 可产出的全部指标/临时列 (needed=None 时即为此全集, 行为不变)
 _ALL_INDICATOR_COLS: frozenset[str] = frozenset({
     "prev_close", "ma5", "ma10", "ma20", "ma30", "ma60",
+    "zx_white", "zx_yellow", "zx_long",
     "ema5", "ema10", "ema20", "ema30", "ema60", "_ema12", "_ema26",
     "_boll_std", "_kdj_ln", "_kdj_hn", "_tr", "vol_ma5", "vol_ma10",
     "_vol_ma5", "high_60d", "low_60d",
@@ -511,7 +513,13 @@ def compute_indicators(
     if "momentum_60d" in want:
         _p4mom.append((pl.col("close") / pl.col("close").shift(60).over("symbol") - 1).alias("momentum_60d"))
     if "change_pct" in want:
-        _p4mom.append((pl.col("close") / pl.col("close").shift(1).over("symbol") - 1).alias("change_pct"))
+        change = pl.col("close") / pl.col("close").shift(1).over("symbol") - 1
+        if {"raw_close", "exchange_pre_close"} <= set(df.columns):
+            # 累计复权因子有精度截断，除权日可能把平盘算成微涨；用交易所参考价。
+            change = pl.when(pl.col("exchange_pre_close") > 0).then(
+                pl.col("raw_close") / pl.col("exchange_pre_close") - 1
+            ).otherwise(change)
+        _p4mom.append(change.alias("change_pct"))
     if _p4mom:
         df = df.with_columns(_p4mom)
     if "change_amount" in want:
@@ -568,6 +576,13 @@ def compute_indicators(
                   "_rsi_avg_gain_14", "_rsi_avg_loss_14",
                   "_rsi_avg_gain_24", "_rsi_avg_loss_24"]
     df = df.drop([c for c in _temp_cols if c in df.columns])
+
+    zx_columns = {"zx_white", "zx_yellow", "zx_long"}
+    if want & zx_columns:
+        from app.indicators.zhixing import add_zhixing_lines
+        df = add_zhixing_lines(df)
+        if needed is not None:
+            df = df.drop(sorted(zx_columns - want))
 
     _elapsed = (_time.perf_counter() - _t0) * 1000
     import logging as _logging

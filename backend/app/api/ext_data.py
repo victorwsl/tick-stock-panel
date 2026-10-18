@@ -177,13 +177,20 @@ def _filter_dimension_member_rows(df: pl.DataFrame, field: str, value: str) -> p
     normalized = value.strip()
     if not normalized:
         raise HTTPException(400, "标签值不能为空")
+    # 数组编码的概念精确匹配，不能按空格或斜线拆散名称。
+    from app.services.market_overview_builder import _dimension_values
+    encoded = pl.col(field).cast(pl.String, strict=False).fill_null("").str.strip_chars().str.starts_with("[")
+    json_rows = df.filter(encoded).filter(
+        pl.col(field).map_elements(lambda raw: normalized in _dimension_values(raw), return_dtype=pl.Boolean))
+    legacy = df.filter(~encoded)
     pattern = rf"(^|[{_DIMENSION_SEPARATOR_CLASS}]){re.escape(normalized)}($|[{_DIMENSION_SEPARATOR_CLASS}])"
-    return df.filter(
+    matched = legacy.filter(
         pl.col(field)
         .cast(pl.String, strict=False)
         .fill_null("")
         .str.contains(pattern)
     )
+    return pl.concat([json_rows, matched])
 
 
 def _ext_data_dir(config: ExtConfig, data_dir: Path) -> Path:

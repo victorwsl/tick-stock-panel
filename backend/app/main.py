@@ -188,7 +188,8 @@ async def _application_lifespan(app: FastAPI):
     qs = QuoteService()
     app.state.quote_service = qs
     qs.set_repo(repo)
-    qs.boot_check()
+    if not settings.personal_local_only:
+        qs.boot_check()
 
     # QuoteService 需要访问 strategy_monitor 等单例
     # 先创建 strategy_monitor，再注入 app.state
@@ -204,75 +205,84 @@ async def _application_lifespan(app: FastAPI):
     depth_service.set_app_state(app.state)
     app.state.depth_service = depth_service
 
-    # 启动调度器(若 enriched 数据为空,首次启动可手动 POST /api/pipeline/run)
-    try:
-        daily_pipeline.set_app_state(app.state)  # 供 depth_finalize job 访问 depth_service
-        scheduler = daily_pipeline.start_scheduler(repo, capset)
-        app.state.scheduler = scheduler
-    except Exception as e:  # noqa: BLE001
-        logger.warning("scheduler not started: %s", e)
-        app.state.scheduler = None
+    # 本地试用保留研究服务，停用会启动在线拉取的后台任务。
+    app.state.scheduler = None
+    if not settings.personal_local_only:
+        # 启动调度器(若 enriched 数据为空,首次启动可手动 POST /api/pipeline/run)
+        try:
+            daily_pipeline.set_app_state(app.state)  # 供 depth_finalize job 访问 depth_service
+            scheduler = daily_pipeline.start_scheduler(repo, capset)
+            app.state.scheduler = scheduler
+        except Exception as e:  # noqa: BLE001
+            logger.warning("scheduler not started: %s", e)
+            app.state.scheduler = None
 
-    # depth sealed: 启动补跑(当天文件不存在) + 盘中轮询(有能力时)
-    try:
-        depth_service.boot_check()
-        depth_service.start_polling()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("depth_service init failed: %s", e)
+        # depth sealed: 启动补跑(当天文件不存在) + 盘中轮询(有能力时)
+        try:
+            depth_service.boot_check()
+            depth_service.start_polling()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("depth_service init failed: %s", e)
 
-    # 盘中分钟增量刷新 (Expert 专有): 线程常驻, 开关/时段/能力门控在循环内每轮判断
-    try:
-        from app.services.minute_refresh import MinuteRefreshService
-        minute_refresh = MinuteRefreshService(repo)
-        minute_refresh.set_app_state(app.state)
-        app.state.minute_refresh = minute_refresh
-        minute_refresh.start()
-    except Exception as e:
-        logger.warning("minute_refresh init failed: %s", e)
+        # 盘中分钟增量刷新 (Expert 专有): 线程常驻, 开关/时段/能力门控在循环内每轮判断
+        try:
+            from app.services.minute_refresh import MinuteRefreshService
+            minute_refresh = MinuteRefreshService(repo)
+            minute_refresh.set_app_state(app.state)
+            app.state.minute_refresh = minute_refresh
+            minute_refresh.start()
+        except Exception as e:
+            logger.warning("minute_refresh init failed: %s", e)
 
-    # 停机缺口自检: 延迟后台扫描, 发现最近交易日的盘中快照/缺口时自动创建
-    # 修复任务 (盘中停机→次日开实时场景, 不修则坏数据被"只刷今天"分支永久留存)
-    try:
-        import threading
+        # 停机缺口自检: 延迟后台扫描, 发现最近交易日的盘中快照/缺口时自动创建
+        # 修复任务 (盘中停机→次日开实时场景, 不修则坏数据被"只刷今天"分支永久留存)
+        try:
+            import threading
 
-        from app.services.data_integrity import boot_integrity_check
+            from app.services.data_integrity import boot_integrity_check
 
-        timer = threading.Timer(30.0, boot_integrity_check, args=(app.state,))
-        timer.daemon = True  # 不阻塞进程退出
-        timer.start()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("integrity boot check scheduling failed: %s", e)
+            timer = threading.Timer(30.0, boot_integrity_check, args=(app.state,))
+            timer.daemon = True  # 不阻塞进程退出
+            timer.start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("integrity boot check scheduling failed: %s", e)
 
-    # 企业微信智能机器人长连接(可选通道, 失败不阻断启动)
-    try:
-        from app.services.wecom_bot_service import WecomBotService
-        wecom_bot_service = WecomBotService()
-        wecom_bot_service.set_app_state(app.state)
-        app.state.wecom_bot_service = wecom_bot_service
-        wecom_bot_service.boot_check()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("wecom_bot_service init failed: %s", e)
+        # 企业微信智能机器人长连接(可选通道, 失败不阻断启动)
+        try:
+            from app.services.wecom_bot_service import WecomBotService
+            wecom_bot_service = WecomBotService()
+            wecom_bot_service.set_app_state(app.state)
+            app.state.wecom_bot_service = wecom_bot_service
+            wecom_bot_service.boot_check()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("wecom_bot_service init failed: %s", e)
 
-    # 内置扩展表 (概念/行业): 先创建 config (含拉取配置), 默认开启定时拉取。
-    # 必须在 pull_scheduler.refresh() 之前执行, 否则全新部署时 scheduler 读不到
-    # 刚创建的预设, 定时任务不会启动。
-    try:
-        from app.services.ext_presets import ensure_builtin_presets
-        await ensure_builtin_presets(store.data_dir)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("内置扩展表初始化失败 (不影响启动): %s", e)
+        # 内置扩展表 (概念/行业): 先创建 config (含拉取配置), 默认开启定时拉取。
+        # 必须在 pull_scheduler.refresh() 之前执行, 否则全新部署时 scheduler 读不到
+        # 刚创建的预设, 定时任务不会启动。
+        try:
+            from app.services.ext_presets import ensure_builtin_presets
+            await ensure_builtin_presets(store.data_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("内置扩展表初始化失败 (不影响启动): %s", e)
 
-    # 扩展数据定时拉取: 在预设配置就绪后启动, 自动调度 enabled 的预设。
-    from app.services.ext_pull import pull_scheduler
-    pull_scheduler.start(store.data_dir)
-    pull_scheduler.refresh(store.data_dir)
-    app.state.pull_scheduler = pull_scheduler
+        # 扩展数据定时拉取: 在预设配置就绪后启动, 自动调度 enabled 的预设。
+        from app.services.ext_pull import pull_scheduler
+        pull_scheduler.start(store.data_dir)
+        pull_scheduler.refresh(store.data_dir)
+        app.state.pull_scheduler = pull_scheduler
 
-    # 财务数据 (需 Expert 套餐): 仅初始化调度器供 /api/financials/sync/* 手动同步,
-    # 不启动自动调度——用户在「财务分析」页点「同步」手动拉取。
-    from app.services.financial_sync import financial_scheduler
-    financial_scheduler.start(store.data_dir, capset)
-    app.state.financial_scheduler = financial_scheduler
+        # 财务数据 (需 Expert 套餐): 仅初始化调度器供 /api/financials/sync/* 手动同步,
+        # 不启动自动调度——用户在「财务分析」页点「同步」手动拉取。
+        from app.services.financial_sync import financial_scheduler
+        financial_scheduler.start(store.data_dir, capset)
+        app.state.financial_scheduler = financial_scheduler
+
+    if settings.personal_local_only:
+        # 仅初始化手动财务同步，不启动在线或周期任务。
+        from app.services.financial_sync import financial_scheduler
+        financial_scheduler.start(store.data_dir, capset, auto_schedule=False)
+        app.state.financial_scheduler = financial_scheduler
 
     # 自愈看门狗: 探测 polars 闸与写锁, 僵死时退出交由 supervisor 拉起 (兜底层)。
     from app.watchdog import start_watchdog

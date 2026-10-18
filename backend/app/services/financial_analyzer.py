@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -25,7 +26,7 @@ _MAX_PERIODS = 4
 def _load_stock_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
     """读取该标的财务数据,返回 {table: [records...]}(按 period_end 降序,截取最新 N 期)。
 
-    数值统一做 NaN/Inf → null 清洗,保证 JSON 序列化不报错。
+    数值统一做 NaN/Inf → null，日期转 ISO 字符串，保证 JSON 可序列化。
     """
     result: dict[str, list[dict]] = {}
     for table in FINANCIAL_TABLES:
@@ -50,6 +51,9 @@ def _load_stock_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]
                 if isinstance(v, float):
                     import math
                     clean[k] = None if not math.isfinite(v) else v
+                elif isinstance(v, date):
+                    # Parquet股本表保留Date/Datetime，JSON入口显式转ISO，不修改存储。
+                    clean[k] = v.isoformat()
                 else:
                     clean[k] = v
             rows.append(clean)

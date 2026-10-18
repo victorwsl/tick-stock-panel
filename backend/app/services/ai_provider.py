@@ -708,7 +708,10 @@ async def probe_ai_config(
     if provider == CODEX_CLI_PROVIDER:
         if not codex_cli_available():
             raise RuntimeError("Codex CLI 不可用: 未找到可运行的 codex 命令")
-        return ""
+        return await _run_codex_cli(
+            [{"role": "user", "content": "Reply exactly: OK. Do not use tools or read any files."}],
+            max_tokens=None, timeout=timeout, model_override=model.strip(),
+        )
     if not api_key:
         raise RuntimeError("未配置 API Key")
     if not base_url:
@@ -935,6 +938,7 @@ async def _run_codex_cli(
     *,
     max_tokens: int | None,
     timeout: float,
+    model_override: str | None = None,
 ) -> str:
     prompt = _codex_prompt(messages, max_tokens=max_tokens)
     run_path = Path(tempfile.mkdtemp(prefix="tickflow-codex-run-"))
@@ -944,7 +948,17 @@ async def _run_codex_cli(
         codex_home_path.mkdir()
         workspace_path.mkdir()
         output_path = codex_home_path / "last-message.txt"
-        _prepare_codex_home(codex_home_path)
+        personal = settings.personal_local_only
+        if personal:
+            # 新版CLI支持忽略配置但复用现有登录，不复制auth.json，不加载用户MCP/项目配置。
+            help_result = subprocess.run([*_codex_base_command(), "exec", "--help"],
+                                         capture_output=True, timeout=10, check=False)
+            if help_result.returncode or b"--ignore-user-config" not in help_result.stdout:
+                raise RuntimeError("个人模式需要支持 --ignore-user-config 的新版Codex CLI")
+            if _active_codex_provider(_read_codex_config()):
+                raise RuntimeError("个人模式当前只验证已登录ChatGPT的Codex；自定义provider需另行配置")
+        else:
+            _prepare_codex_home(codex_home_path)
 
         # 不传 --ephemeral: 老版本 codex(如 0.58)无此参数, 传了直接报
         # unexpected argument; 会话隔离已由一次性临时 CODEX_HOME 保证(跑完即删)。
@@ -959,12 +973,21 @@ async def _run_codex_cli(
             "--output-last-message",
             str(output_path),
         ]
-        model = current_ai_model().strip()
+        if personal:
+            args.extend(["--ignore-user-config", "--ephemeral", "-c", 'approval_policy="never"'])
+        model = current_ai_model().strip() if model_override is None else model_override
+        if personal and not model:
+            model = normalize_codex_model(str(_read_codex_config().get("model") or ""))
         if model:
             args.extend(["--model", model])
+        if personal:
+            effort = current_codex_reasoning_effort() or normalize_codex_reasoning_effort(
+                str(_read_codex_config().get("model_reasoning_effort") or ""))
+            if effort:
+                args.extend(["-c", _toml_string("model_reasoning_effort", effort)])
         args.extend(["--cd", str(workspace_path), "-"])
 
-        env = _codex_process_env(codex_home_path)
+        env = _codex_process_env(_codex_home() if personal else codex_home_path)
 
         returncode, stdout, stderr = await asyncio.to_thread(
             _run_codex_process,
@@ -1114,6 +1137,13 @@ def _resolve_command(command: str) -> str | None:
         resolved = shutil.which(f"{command}.cmd")
     if not resolved and sys.platform == "win32":
         resolved = _resolve_windows_codex_command(command)
+    if not resolved and sys.platform == "darwin":
+        # Mac GUI启动的PATH不一定包含CLI；复用已安装的官方ChatGPT内置版本。
+        candidates = [Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+                      Path.home() / "Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"]
+        for candidate in candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
     return resolved
 
 
