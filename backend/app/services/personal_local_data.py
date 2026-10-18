@@ -124,6 +124,8 @@ def import_stocks(stock_root: Path | None = None) -> dict:
     from app.tickflow.repository import DataStore, KlineRepository
 
     root = source_path().parent
+    if stock_root is not None:
+        stock_root = stock_root.expanduser().resolve()
     hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in [
         root / 'index_daily.parquet', root / 'stock_basic.parquet', root / 'daily_basic.parquet', root / 'daily_qfq.parquet']}
     if stock_root is not None:
@@ -148,7 +150,7 @@ def import_stocks(stock_root: Path | None = None) -> dict:
         raise ValueError('缓存未覆盖本地同期股票日线键，请先继续补数；未导入')
     basic = (pl.scan_parquet(root / 'daily_basic.parquet').filter(pl.col('trade_date').is_between(pl.lit(start), pl.lit(end)))
              .select(*keys, pl.col('close').alias('basic_close'), 'float_share', 'turnover_rate').collect())
-    compare = raw_source.join(basic.select(*keys, 'basic_close'), on=keys, how='inner')
+    compare = raw_source.select(*keys, 'close').join(basic.select(*keys, 'basic_close'), on=keys, how='inner')
     error = compare.select((pl.col('close') - pl.col('basic_close')).abs().max()).item()
     price_conflicts = []
     if not compare.height:
@@ -161,7 +163,10 @@ def import_stocks(stock_root: Path | None = None) -> dict:
         price_conflicts = checked.to_dicts()
         # 原价保留；冲突daily_basic整行不用于股本/换手率，留下缺口而非填补。
         basic = basic.join(checked.select(keys), on=keys, how='anti')
+    compare_rows = compare.height
+    del compare, expected, factors_source
     symbols = sorted(raw_source['ts_code'].unique().to_list())
+    del raw_source
     raw = provider.get_daily(symbols)
     instruments = provider.get_instruments('stock')
     missing_metadata = sorted(set(symbols) - {x['symbol'] for x in instruments})
@@ -188,12 +193,14 @@ def import_stocks(stock_root: Path | None = None) -> dict:
                           pl.col('trade_date').str.strptime(pl.Date, '%Y%m%d').alias('announce_date'),
                           (pl.col('float_share') * 10000).alias('float_shares'),
                           pl.lit('daily_basic_snapshot').alias('source'))
+    del basic
     indices = provider.get_instruments('index')
     index_daily = provider.get_daily([r['symbol'] for r in indices], asset_type='index')
     index_enriched = compute_enriched(index_daily)
     parts = []
-    for offset in range(0, len(symbols), 500):
-        batch = symbols[offset:offset + 500]
+    # Full local history needs smaller batches to bound indicator intermediates.
+    for offset in range(0, len(symbols), 100):
+        batch = symbols[offset:offset + 100]
         enriched = compute_enriched(raw.filter(pl.col('symbol').is_in(batch)),
                                     events.filter(pl.col('symbol').is_in(batch)),
                                     inst.filter(pl.col('symbol').is_in(batch)),
@@ -223,7 +230,7 @@ def import_stocks(stock_root: Path | None = None) -> dict:
             'symbols': len(symbols), 'trading_days': raw['date'].n_unique(),
             'start': str(raw['date'].min()), 'end': str(raw['date'].max()),
             'index_symbols': len(indices), 'index_rows': index_daily.height,
-            'close_crosscheck_rows': compare.height, 'close_max_error': error,
+            'close_crosscheck_rows': compare_rows, 'close_max_error': error,
             'quarantined_daily_basic': price_conflicts, 'missing_current_metadata': missing_metadata,
             'source_unchanged': unchanged, 'source_sha256': hashes,
             'stock_execution_verified': False,

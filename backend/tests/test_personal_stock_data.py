@@ -1,4 +1,5 @@
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -157,3 +158,10 @@ def test_narrower_reload_cannot_erase_full_shares_history(stock_source):
     with pytest.raises(ValueError, match='短于现有历史'):
         import_stocks()
     assert pl.read_parquet(settings.data_dir / 'financials/shares/part.parquet').height == 4
+
+
+def test_relative_snapshot_path_survives_final_source_verification(stock_source, monkeypatch):
+    monkeypatch.chdir(stock_source.parent)
+    result = import_stocks(stock_root=Path('raw'))
+    assert result['source_unchanged']
+    assert str(stock_source / 'daily.parquet') in result['source_sha256']
