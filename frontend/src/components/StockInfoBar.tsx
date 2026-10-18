@@ -1,3 +1,4 @@
+import { KLINE_COLORS } from '@/lib/theme'
 import { useState, type ReactNode } from 'react'
 import { Settings2, RadioTower, Star, ExternalLink } from 'lucide-react'
 import type { KlineRow, FinancialMetricRecord } from '@/lib/api'
@@ -7,8 +8,8 @@ import { WatchlistAddMenu } from '@/components/WatchlistAddMenu'
 import { INFO_GROUPS, type ColumnConfig } from '@/lib/stock-info-fields'
 import { buildStockExternalUrl, loadStockExternalTemplate } from '@/lib/stock-external-link'
 
-const BULL = '#C74040'
-const BEAR = '#2D9B65'
+const BULL = KLINE_COLORS.bull
+const BEAR = KLINE_COLORS.bear
 
 interface Props {
   symbol: string

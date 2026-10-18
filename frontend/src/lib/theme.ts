@@ -51,8 +51,17 @@ export function useTheme(): Theme {
 // ================================================================
 // 图表调色板 — ECharts / lightweight-charts 画布不吃 CSS 变量,
 // 所有图表组件统一从这里取色, 主题切换时依赖 useTheme 重建 option。
-// bull/bear/accent 等语义色双主题一致, 不在此重复定义。
+// K线语义色双主题一致；文字、网格和背景按主题取色。
 // ================================================================
+
+// K线统一配色：保留红涨绿跌；空心阳线、实心阴线提供非颜色线索。
+export const KLINE_COLORS = {
+  bull: '#F23645',
+  bear: '#089981',
+  bullFill: 'transparent',
+  bullVolume: 'rgba(242,54,69,0.65)',
+  bearVolume: 'rgba(8,153,129,0.65)',
+} as const
 
 export interface ChartTheme {
   /** 轴刻度/图例等常规文字 */

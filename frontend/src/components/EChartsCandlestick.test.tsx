@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { MiniCandlestick } from './stock-table/MiniCandlestick'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { EChartsCandlestick, type OHLC } from './EChartsCandlestick'
 
@@ -127,7 +129,12 @@ it('回放把触发与成交放到K线外不同的行，保留真实日期及退
       showInfoBar={false} visibleBars="all" activeIndicators={['vol']} />,
   ))
   const option = chart.setOption.mock.calls.map(c => c[0]).find(o => o.grid)
-  const points = option.series.find((s: any) => s.name === 'K').markPoint.data
+  const candle = option.series.find((s: any) => s.name === 'K')
+  // 色弱用户可通过空心/实心区分涨跌，不依赖红绿色辨认。
+  expect(candle.itemStyle.color).toBe('transparent')
+  expect(candle.itemStyle.color0).toBe('#089981')
+  expect(candle.itemStyle.borderColor).toBe('#F23645')
+  const points = candle.markPoint.data
   expect(points.map((p: any) => p.name)).toEqual(markers.map(m => m.date))
   expect(points.map((p: any) => p.symbol)).toEqual(['diamond', 'circle', 'diamond', 'circle'])
   expect(points[0].y).toBeGreaterThan(option.grid[0].top + option.grid[0].height)
@@ -155,4 +162,17 @@ it('回放把触发与成交放到K线外不同的行，保留真实日期及退
     expect(svg).toContain('买信号')
     expect(svg).not.toContain('NaN')
   } finally { rendered.dispose(); context.mockRestore() }
+})
+
+
+it('列表迷你K线也使用空心阳线、实心青绿阴线', () => {
+  const svg = renderToStaticMarkup(<MiniCandlestick rows={[
+    { date: '2025-01-02', open: 10, close: 11, high: 12, low: 9 },
+    { date: '2025-01-03', open: 11, close: 10, high: 12, low: 9 },
+  ] as any} />)
+  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml')
+  const bodies = doc.querySelectorAll('rect')
+  expect(bodies[0].getAttribute('fill')).toBe('none')
+  expect(bodies[0].getAttribute('stroke')).toBe('#F23645')
+  expect(bodies[1].getAttribute('fill')).toBe('#089981')
 })

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo, useState } from 'react'
-import { chartTheme, getTheme, useTheme } from '@/lib/theme'
+import { KLINE_COLORS, chartTheme, getTheme, useTheme } from '@/lib/theme'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
 import type { KlineRow, LevelSeries } from '@/lib/api'
@@ -21,10 +21,10 @@ import type { KlineRow, LevelSeries } from '@/lib/api'
 
 // ===== 配色(红涨绿跌, 双主题通用); 画布轴/网格主题相关色走 CT() =====
 const THEME = {
-  bull: '#C74040',
-  bear: '#2D9B65',
-  volUp: 'rgba(240,68,56,0.5)',
-  volDown: 'rgba(18,183,106,0.5)',
+  bull: KLINE_COLORS.bull,
+  bear: KLINE_COLORS.bear,
+  volUp: KLINE_COLORS.bullVolume,
+  volDown: KLINE_COLORS.bearVolume,
 }
 
 /** 当前主题的图表调色板 (buildOption 渲染时调用; 切换由组件 effect 触发重建)。 */
@@ -228,8 +228,8 @@ export function AnalysisKChart({
         // z=2 让蜡烛始终在价位线(z=1)之上, hover 高亮价位线时不会被遮挡/变淡
         z: 2,
         itemStyle: {
-          color: THEME.bull, color0: THEME.bear,
-          borderColor: THEME.bull, borderColor0: THEME.bear,
+          color: KLINE_COLORS.bullFill, color0: THEME.bear,
+          borderColor: THEME.bull, borderColor0: THEME.bear, borderWidth: 1.4,
         },
         markPoint: markPointData.length ? { data: markPointData, animation: false } : undefined,
         markArea: markAreaData.length ? { silent: true, data: markAreaData } : undefined,

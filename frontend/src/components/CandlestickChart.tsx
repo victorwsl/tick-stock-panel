@@ -7,7 +7,7 @@ import {
   type CandlestickData,
   type HistogramData,
 } from 'lightweight-charts'
-import { useChartTheme } from '@/lib/theme'
+import { KLINE_COLORS, useChartTheme } from '@/lib/theme'
 
 export interface OHLC {
   date: string
@@ -28,10 +28,10 @@ export function fmtBigNum(v: number): string {
 // 序列颜色 (双主题通用); 画布文字/网格/边框主题相关色走 ChartTheme
 const THEME = {
   background: 'transparent',
-  bull: '#F04438',
-  bear: '#12B76A',
-  volBull: 'rgba(240,68,56,0.4)',
-  volBear: 'rgba(18,183,106,0.4)',
+  bull: KLINE_COLORS.bull,
+  bear: KLINE_COLORS.bear,
+  volBull: KLINE_COLORS.bullVolume,
+  volBear: KLINE_COLORS.bearVolume,
 }
 
 interface Props {
@@ -92,7 +92,7 @@ export function CandlestickChart({ data, height = 480 }: Props) {
 
     // Candlestick — occupies top 80% via default price scale
     const candle = chart.addCandlestickSeries({
-      upColor: THEME.bull,
+      upColor: KLINE_COLORS.bullFill,
       downColor: THEME.bear,
       borderUpColor: THEME.bull,
       borderDownColor: THEME.bear,

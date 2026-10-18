@@ -1,4 +1,5 @@
 /** 迷你蜡烛图（自选/策略列表共享）。 */
+import { KLINE_COLORS } from '@/lib/theme'
 import type { KlineRow } from '@/lib/api'
 
 export function MiniCandlestick({ rows, width = 100, height = 80 }: { rows: KlineRow[]; width?: number; height?: number }) {
@@ -7,8 +8,8 @@ export function MiniCandlestick({ rows, width = 100, height = 80 }: { rows: Klin
     return <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="block" aria-label="加载中" />
   }
 
-  const BULL = '#C74040'
-  const BEAR = '#2D9B65'
+  const BULL = KLINE_COLORS.bull
+  const BEAR = KLINE_COLORS.bear
   const NEUTRAL = '#A1A1AA'
 
   const W = width
@@ -50,16 +51,16 @@ export function MiniCandlestick({ rows, width = 100, height = 80 }: { rows: Klin
       }
     }
 
+    const top = yScale(Math.max(r.open, r.close))
+    const bot = yScale(Math.min(r.open, r.close))
     wicks.push(
-      <line
+      <path
         key={`w${i}`}
-        x1={x} y1={yScale(r.high)} x2={x} y2={yScale(r.low)}
-        stroke={color} strokeWidth={1}
+        d={`M${x},${yScale(r.high)}V${top} M${x},${bot}V${yScale(r.low)}`}
+        stroke={color} strokeWidth={1.2} fill="none"
       />
     )
 
-    const top = yScale(Math.max(r.open, r.close))
-    const bot = yScale(Math.min(r.open, r.close))
     const bodyH = Math.max(bot - top, 1)
 
     rects.push(
@@ -67,7 +68,8 @@ export function MiniCandlestick({ rows, width = 100, height = 80 }: { rows: Klin
         key={`c${i}`}
         x={x - bodyW / 2} y={top}
         width={bodyW} height={bodyH}
-        fill={color}
+        fill={color === BULL ? 'none' : color}
+        stroke={color} strokeWidth={1.2}
       />
     )
   }

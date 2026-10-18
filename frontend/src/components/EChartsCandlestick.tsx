@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useMemo } from 'react'
-import { chartTheme, getTheme, useTheme } from '@/lib/theme'
+import { KLINE_COLORS, chartTheme, getTheme, useTheme } from '@/lib/theme'
 import { fmtPct } from '@/lib/format'
 import * as echarts from 'echarts'
 import type { ECharts, EChartsOption } from 'echarts'
@@ -187,7 +187,7 @@ export const SUB_CHARTS: SubChartDef[] = [
     buildInfo: (d) => {
       if (!d) return []
       return [
-        { label: '量', color: d.close >= d.open ? '#C74040' : '#2D9B65', value: fmtVol(d.volume) },
+        { label: '量', color: d.close >= d.open ? KLINE_COLORS.bull : KLINE_COLORS.bear, value: fmtVol(d.volume) },
       ]
     },
   },
@@ -232,7 +232,7 @@ export const SUB_CHARTS: SubChartDef[] = [
       return [
         { label: 'DIF', color: '#FACC15', value: d.macd_dif != null ? d.macd_dif.toFixed(3) : '—' },
         { label: 'DEA', color: '#8B5CF6', value: d.macd_dea != null ? d.macd_dea.toFixed(3) : '—' },
-        { label: 'MACD', color: d.macd_hist != null && d.macd_hist >= 0 ? '#C74040' : '#2D9B65', value: d.macd_hist != null ? d.macd_hist.toFixed(3) : '—' },
+        { label: 'MACD', color: d.macd_hist != null && d.macd_hist >= 0 ? KLINE_COLORS.bull : KLINE_COLORS.bear, value: d.macd_hist != null ? d.macd_hist.toFixed(3) : '—' },
       ]
     },
   },
@@ -352,10 +352,10 @@ interface Props {
 
 // 序列颜色 (双主题通用); 画布轴/网格/文字等主题相关色走 CT() 动态取
 const THEME = {
-  bull: '#C74040',
-  bear: '#2D9B65',
-  bullAlpha: 'rgba(240,68,56,0.7)',
-  bearAlpha: 'rgba(18,183,106,0.7)',
+  bull: KLINE_COLORS.bull,
+  bear: KLINE_COLORS.bear,
+  bullAlpha: KLINE_COLORS.bullVolume,
+  bearAlpha: KLINE_COLORS.bearVolume,
   ma5: '#A1A1AA',
   ma10: '#3B82F6',
   ma20: '#F97316',
@@ -408,7 +408,7 @@ function buildSubInfoGraphics(
         const ratio = volumeRatioAt(data, infoIdx, volumeCompare.days)
         items.push({
           label: `量比${volumeCompare.days}`,
-          color: ratio != null && ratio >= 1 ? '#C74040' : '#2D9B65',
+          color: ratio != null && ratio >= 1 ? KLINE_COLORS.bull : KLINE_COLORS.bear,
           value: fmtVolumeRatio(ratio),
         })
       }
@@ -717,8 +717,8 @@ function buildOption(
     name: 'K', type: 'candlestick', data: candleData,
     animation: false,
     itemStyle: {
-      color: THEME.bull, color0: THEME.bear,
-      borderColor: THEME.bull, borderColor0: THEME.bear,
+      color: KLINE_COLORS.bullFill, color0: THEME.bear,
+      borderColor: THEME.bull, borderColor0: THEME.bear, borderWidth: 1.4,
       cursor: 'pointer',
     },
     markPoint: markPointData.length > 0 ? { data: markPointData, animation: false } : undefined,
