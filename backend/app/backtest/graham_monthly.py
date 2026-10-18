@@ -62,7 +62,8 @@ def simulate(engine, raw, targets, config, progress_cb=None, cancel_event=None, 
     daily = daily.merge(limits[['ts_code', 'trade_date', 'up_limit', 'down_limit']], on=['ts_code', 'trade_date'], how='left', validate='one_to_one')
     bars = {d: f.set_index('ts_code').to_dict('index') for d, f in daily.groupby('trade_date', sort=False)}
     positions, pending, journals, fills, trades, curves, drawdowns = {}, {}, [], [], [], [], []
-    ledger = DistributionLedger(raw['dividends'], journals)
+    ledger = DistributionLedger(raw['dividends'], journals, factor_decimals=raw.get('factor_decimals'),
+                                fractional_policy=raw.get('fractional_policy', 'reject'))
     cash = float(config.initial_capital)
     peak = cash
     stocks = raw['stocks'].drop_duplicates('ts_code').set_index('ts_code')
@@ -330,6 +331,10 @@ def simulate(engine, raw, targets, config, progress_cb=None, cancel_event=None, 
     stats['annual_return'] = (curves[-1]['value']/config.initial_capital)**(365.25/max(span,1))-1
     stats['max_drawdown'] = min((r['value'] for r in drawdowns), default=0.)
     stats['execution'] = execution
+    stats['fractional_policy'] = raw.get('fractional_policy', 'reject')
+    stats['fractional_share_discards'] = sum(j.get('event') == 'fractional_share_discard' for j in journals)
+    stats['factor_decimals'] = raw.get('factor_decimals')
+    stats['factor_precision_matches'] = sum(j.get('event') == 'factor_precision_match' for j in journals)
     stats['fees_total'] = fees_total
     stats['pending_exit_positions'] = len(pending)
     stats['unrealized_positions'] = len(positions)

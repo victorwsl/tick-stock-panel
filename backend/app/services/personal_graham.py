@@ -37,13 +37,16 @@ def load_inputs(data_dir: Path):
         raise ValueError('Graham本地输入未安装，请先运行 scripts/install_graham.py')
     spec = json.loads(config_path.read_text())
     paths = {key: Path(value) for key, value in spec['paths'].items()}
+    signature_paths = {**paths, 'sources_config': config_path}
     signature = tuple((key, str(path), path.stat().st_mtime_ns, path.stat().st_size)
-                      for key, path in sorted(paths.items()))
+                      for key, path in sorted(signature_paths.items()))
     with _LOCK:
         cached = _CACHE.get(str(config_path))
         if cached and cached[0] == signature:
             return cached[1]
         raw = {key: _frame(path) for key, path in paths.items()}
+        raw['factor_decimals'] = spec.get('factor_decimals')
+        raw['fractional_policy'] = spec.get('fractional_policy', 'reject')
         for key in ('income', 'balance', 'cashflow'):
             f = raw[key]
             f = f[f.report_type.astype(str).eq('1')].copy()
@@ -66,7 +69,7 @@ def load_inputs(data_dir: Path):
         raw['daily'] = daily
         raw['names'] = raw['names'].sort_values(['ts_code', 'start_date'])
         raw['input_hashes'] = {key: hashlib.sha256(path.read_bytes()).hexdigest()
-                               for key, path in paths.items()}
+                               for key, path in signature_paths.items()}
         raw['signature'] = signature
         _CACHE[str(config_path)] = (signature, raw)
         return raw

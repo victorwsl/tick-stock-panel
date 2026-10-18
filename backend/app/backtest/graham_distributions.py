@@ -6,13 +6,19 @@ Unsupported or unexplained actions fail loudly rather than freezing holdings.
 """
 from __future__ import annotations
 
+from decimal import Decimal, ROUND_HALF_UP
+
 import numpy as np
 import pandas as pd
 
 
 class DistributionLedger:
-    def __init__(self, events, journal):
+    def __init__(self, events, journal, *, factor_decimals=None, fractional_policy="reject"):
         self.journal = journal
+        self.factor_decimals = factor_decimals
+        self.fractional_policy = fractional_policy
+        if fractional_policy not in {"reject", "floor"}:
+            raise ValueError("fractional_policy must be reject or floor")
         self.claims = []
         self.pending_cash = []
         self.by_record = {}
@@ -62,11 +68,22 @@ class DistributionLedger:
                 if net and (len(e['pay_date']) != 8 or e['pay_date'] < e['ex_date']):
                     raise ValueError('Missing/invalid cash payment date')
                 new_shares = claim['record_qty'] * e['stk_div']
-                if not np.isclose(new_shares, round(new_shares), atol=1e-7):
-                    raise ValueError('Fractional stock distribution requires registrar allocation')
-                new_shares = int(round(new_shares))
+                remainder = 0.
+                if not np.isclose(new_shares, round(new_shares), rtol=0, atol=1e-7):
+                    if self.fractional_policy == 'reject':
+                        raise ValueError('Fractional stock distribution requires registrar allocation')
+                    allocated = int(np.floor(new_shares))
+                    remainder = new_shares - allocated
+                    new_shares = allocated
+                else:
+                    new_shares = int(round(new_shares))
                 if new_shares and (len(e['div_listdate']) != 8 or e['div_listdate'] < e['ex_date']):
                     raise ValueError('Missing/invalid stock listing date')
+                if remainder:
+                    self.journal.append(dict(trade_date=date, ts_code=e['ts_code'], position_id=p['position_id'],
+                        event='fractional_share_discard', record_qty=claim['record_qty'], stock_rate=e['stk_div'],
+                        allocated_qty=new_shares, discarded_qty=remainder,
+                        cash_delta=0., receivable_delta=0., qty_delta=0, pending_delta=0))
                 p['pending_qty'] = p.get('pending_qty', 0) + new_shares
                 p['proceeds'] += net
                 if net:
@@ -89,7 +106,20 @@ class DistributionLedger:
             row = today.get(code)
             if row is None:
                 continue
-            if not np.isclose(row['adj_factor'], p['adj_factor'], rtol=1e-10):
+            changed = not np.isclose(row['adj_factor'], p['adj_factor'], rtol=1e-10)
+            if changed and self.factor_decimals is not None:
+                # 混用3/4位小数的输入按声明精度比较；现金和股数始终用原始权益值。
+                unit = Decimal(1).scaleb(-self.factor_decimals)
+                previous = Decimal(str(p['adj_factor'])).quantize(unit, rounding=ROUND_HALF_UP)
+                current = Decimal(str(row['adj_factor'])).quantize(unit, rounding=ROUND_HALF_UP)
+                if previous == current:
+                    self.journal.append(dict(trade_date=date, ts_code=code, position_id=p['position_id'],
+                        event='factor_precision_match', previous_factor=float(p['adj_factor']),
+                        factor=float(row['adj_factor']), factor_decimals=self.factor_decimals,
+                        cash_delta=0., receivable_delta=0., qty_delta=0, pending_delta=0))
+                    p['adj_factor'] = row['adj_factor']
+                    changed = False
+            if changed:
                 explained = any(p['last_bar_date'] < e['ex_date'] <= date for e in self.by_code.get(code, []))
                 if not explained:
                     raise ValueError(f'Unexplained adjustment: {code} {date}')
