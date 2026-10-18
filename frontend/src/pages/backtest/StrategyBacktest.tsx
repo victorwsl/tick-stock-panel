@@ -997,6 +997,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const [holdingDays, setHoldingDays] = useState(saved?.holdingDays ?? '5')
   const [highGranularity, setHighGranularity] = useState(saved?.minuteFill ?? false)
   // 市场环境过滤(空=不过滤)
+  const [amvMode, setAmvMode] = useState<'' | 'active' | 'confirmed'>(saved?.amvMode ?? '')
   const [regimeStates, setRegimeStates] = useState<string[]>(saved?.regimeStates ?? [])
   const [regimeMinScore, setRegimeMinScore] = useState<number | ''>(saved?.regimeMinScore ?? '')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -1052,6 +1053,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     if (cfg.params && typeof cfg.params === 'object') setStrategyParams(cfg.params)
     if (cfg.overrides && typeof cfg.overrides === 'object') setOverrides(cfg.overrides)
     const rf = cfg.regime_filter
+    setAmvMode(rf?.amv === 'active' || rf?.amv === 'confirmed' ? rf.amv : '')
     if (rf && typeof rf === 'object' && !Array.isArray(rf)) {
       setRegimeStates(Array.isArray(rf.states) ? rf.states.map(String) : [])
       setRegimeMinScore(rf.min_score != null ? Number(rf.min_score) : '')
@@ -1215,6 +1217,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
         mode: simMode,
         holdingDays,
         minuteFill: isMinuteStrategy ? false : highGranularity,
+        amvMode,
         regimeStates,
         regimeMinScore,
         params: strategyParams,
@@ -1253,8 +1256,9 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
       mode: simMode,
       holding_days: Number(holdingDays) || 5,
       minute_fill: isMinuteStrategy ? false : highGranularity,
-      regime_filter: regimeStates.length > 0 || regimeMinScore !== ''
+      regime_filter: amvMode || regimeStates.length > 0 || regimeMinScore !== ''
         ? {
+            ...(amvMode ? { amv: amvMode } : {}),
             ...(regimeStates.length > 0 ? { states: regimeStates } : {}),
             ...(regimeMinScore !== '' ? { min_score: Number(regimeMinScore) } : {}),
           }
@@ -1615,6 +1619,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const resultTradeDays = result?.equity_curve?.length ?? 0
   const resultRegimeFilter = result?.config?.regime_filter as {
     states?: string[]
+    amv?: string
     min_score?: number
   } | null | undefined
   const resultRegimeSummary = resultRegimeFilter
@@ -1622,6 +1627,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
         resultRegimeFilter.states?.length
           ? resultRegimeFilter.states.map(state => REGIME_STATE_LABELS[state as keyof typeof REGIME_STATE_LABELS] ?? state).join('/')
           : null,
+        resultRegimeFilter.amv ? `0AMV${resultRegimeFilter.amv === 'active' ? '启动/确认' : '仅确认'}` : null,
         resultRegimeFilter.min_score != null ? `最低 ${resultRegimeFilter.min_score} 分` : null,
       ].filter(Boolean).join(' · ')
     : ''
@@ -2109,6 +2115,14 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
           </div>
         </div>
 
+        <label className="flex flex-wrap items-center gap-2 rounded-btn border border-border bg-surface/50 px-3 py-2 text-xs">
+          <span className="font-medium text-foreground">0AMV开仓过滤</span>
+          <select aria-label="0AMV开仓过滤" value={amvMode} onChange={e => setAmvMode(e.target.value as typeof amvMode)}
+            className="rounded border border-border bg-base p-1 text-secondary">
+            <option value="">不启用（对照）</option><option value="active">试探或确认时允许买入</option><option value="confirmed">仅确认时允许买入</option>
+          </select>
+          <span className="text-muted">T日收盘判断，T+1开盘执行；缺当日数据禁开仓，不强制平仓，不调整仓位上限</span>
+        </label>
         {/* 市场环境过滤: 只在指定环境的交易日入场(强制 T-1, 用前一日环境判定) */}
         <div className="rounded-btn border border-border bg-surface/50 px-3 py-2 space-y-1.5">
           <div className="flex items-center gap-2">

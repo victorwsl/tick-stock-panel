@@ -7,6 +7,7 @@
  * 时间范围: 1年(250交易日) / 2年(500) / 自定义(1~1000天) / 全部(走日期范围)。
  * 美化对齐 Dashboard 设计语言: 半透明 surface 卡片 + 渐变竖条标题 + 语义色。
  */
+import { ActiveMvChart } from '@/components/ActiveMvChart'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import * as echarts from 'echarts'
@@ -656,6 +657,7 @@ export function Regime() {
 
   return (
     <div className="mx-auto max-w-[1440px] px-4 py-5 space-y-4">
+      <ActiveMvChart />
       {/* ── 头部 (Dashboard 渐变条卡片) ── */}
       <div className={cn(cardCls, 'relative overflow-hidden rounded-card bg-gradient-to-r from-surface/90 to-surface/70 px-4 py-3')}>
         <div className="absolute left-0 top-0 h-full w-1 bg-gradient-to-b from-accent to-accent/20" />

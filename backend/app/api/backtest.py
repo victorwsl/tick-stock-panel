@@ -485,6 +485,9 @@ def _make_job_key(
     regime_filter: str | None = None,
 ) -> str:
     raw = f"{strategy_id}|{symbols}|{start}|{end}|{matching}|{entry_fill}|{exit_fill}|{fees_pct}|{slippage_bps}|{max_positions}|{max_exposure_pct}|{initial_capital}|{position_sizing}|{params}|{overrides}|{mode}|{holding_days}|{commission_pct}|{stamp_tax_pct}|{asset_type}|{minute_fill}|{regime_filter}"
+    if regime_filter and json.loads(regime_filter).get("amv"):
+        from app.services.personal_amv import source_fingerprint
+        raw += "|amv=" + source_fingerprint()
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 

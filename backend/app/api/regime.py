@@ -47,6 +47,18 @@ def _df_to_records(df) -> list[dict]:
     return records
 
 
+@router.get("/active-mv")
+def active_mv(start: date | None = None, end: date | None = None,
+              limit: int = Query(250, ge=0, le=10000)):
+    from fastapi import HTTPException
+
+    from app.services.personal_amv import history_payload
+    try:
+        return history_payload(start, end, limit)
+    except (ValueError, OSError, pl.exceptions.PolarsError) as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+
+
 @router.get("/history")
 def regime_history(
     request: Request,

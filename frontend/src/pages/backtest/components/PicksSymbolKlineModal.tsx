@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { X } from 'lucide-react'
+import { ActiveMvChart } from '@/components/ActiveMvChart'
 import { StockPanel } from '@/components/StockPanel'
 import { NavPager, NavWrapToast } from '@/components/NavPager'
 import type { ChartMarker } from '@/components/EChartsCandlestick'
@@ -196,6 +197,7 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
                 showIntraday={false}
                 visibleBars="all"
               />
+              <ActiveMvChart start={periodStart} end={periodEnd} />
             </div>
 
             {/* 首↔尾循环弱提示 */}

@@ -156,6 +156,7 @@ export const storage = {
     mode: 'position' | 'full'
     holdingDays: string
     minuteFill?: boolean
+    amvMode?: '' | 'active' | 'confirmed'
     regimeStates?: string[]
     regimeMinScore?: number | ''
     params?: Record<string, any>

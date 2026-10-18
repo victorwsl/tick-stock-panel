@@ -6,6 +6,7 @@ import { PicksSymbolKlineModal } from './PicksSymbolKlineModal'
 import type { StrategyBacktestResult, StrategyBacktestTrade } from '@/lib/api'
 
 const captured = vi.hoisted(() => ({ props: {} as any, names: {} }))
+vi.mock('@/components/ActiveMvChart', () => ({ ActiveMvChart: () => null }))
 vi.mock('@/components/StockPanel', () => ({ StockPanel: (props: any) => { captured.props = props; return null } }))
 vi.mock('@/lib/useCustomSignalNames', () => ({ useCustomSignalNames: () => captured.names }))
 

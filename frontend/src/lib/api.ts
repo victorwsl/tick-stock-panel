@@ -3040,6 +3040,16 @@ export const api = {
   rpsRotation: (days: number, kind?: 'concept' | 'industry', level?: number) =>
     request<RpsRotationData>(`/api/rps/rotation?days=${days}${kind ? `&kind=${kind}` : ''}${level ? `&level=${level}` : ''}`),
 
+  activeMv: (start?: string, end?: string, limit = 250) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (start) params.set('start', start)
+    if (end) params.set('end', end)
+    return request<{ rows: Array<{ date: string; open: number; high: number; low: number; close: number;
+      zx_white: number | null; zx_yellow: number | null; zx_long: number | null;
+      r1: number | null; r3: number | null; amv_state: string }>;
+      total: number; earliest: string | null; latest: string | null; source_sha256: string; unit: string; rule: string
+    }>(`/api/regime/active-mv?${params}`)
+  },
   // 市场环境(Regime)
   regimeHistory: (start?: string, end?: string, limit?: number) => {
     const params = new URLSearchParams()

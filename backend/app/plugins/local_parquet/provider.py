@@ -129,6 +129,29 @@ class LocalParquetProvider:
                  'name': _NAMES.get(s, s), 'type': 'index', 'region': 'CN'}
                 for s in sorted(self._read()['ts_code'].unique().to_list())]
 
+    def get_active_mv(self):
+        """真实0AMV独立数据集：只读，不冒充可交易指数，不转换未知单位。"""
+        path = source_path().with_name('compass_0amv.parquet')
+        if not path.is_file():
+            raise ValueError('缺少本地 raw/compass_0amv.parquet，请先同步Windows导出数据')
+        frame = _dates(pl.read_parquet(path)).rename({'trade_date': 'date'})
+        required = {'date', 'open', 'high', 'low', 'close'}
+        if not required <= set(frame.columns):
+            raise ValueError('0AMV缺少日期或OHLC列，不能伪造K线')
+        if frame['date'].null_count() or frame['date'].is_duplicated().any():
+            raise ValueError('0AMV日期为空或重复，请核对源数据')
+        values = [pl.col(c).cast(pl.Float64, strict=True) for c in ('open', 'high', 'low', 'close')]
+        frame = frame.with_columns(values)
+        bad = frame.filter(
+            pl.any_horizontal([pl.col(c).is_null() | ~pl.col(c).is_finite() | (pl.col(c) <= 0)
+                               for c in ('open', 'high', 'low', 'close')])
+            | (pl.col('low') > pl.min_horizontal('open', 'close'))
+            | (pl.col('high') < pl.max_horizontal('open', 'close'))
+        )
+        if bad.height:
+            raise ValueError(f'0AMV有{bad.height}条无效OHLC，未自动修正')
+        return frame.sort('date')
+
     def get_daily(self, symbols, start_time=None, end_time=None, asset_type='stock', on_chunk_done=None):
         if asset_type not in {'stock', 'index', 'etf'}:
             raise ValueError('当前接通股票、ETF和指数日线')

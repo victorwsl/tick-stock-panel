@@ -789,6 +789,10 @@ class StrategyBacktestService:
 
     @staticmethod
     def _matrix_prepare_signature(config: StrategyBacktestConfig) -> tuple:
+        amv_source = None
+        if config.regime_filter and config.regime_filter.get("amv"):
+            from app.services.personal_amv import source_fingerprint
+            amv_source = source_fingerprint()
         return (
             config.strategy_id,
             None if config.symbols is None else tuple(config.symbols),
@@ -800,6 +804,7 @@ class StrategyBacktestService:
             config.minute_fill,
             json.dumps(config.overrides or {}, sort_keys=True, ensure_ascii=False, default=str),
             json.dumps(config.regime_filter or {}, sort_keys=True, ensure_ascii=False, default=str),
+            amv_source,
         )
 
     def _resolve_composite_feature_plan(
@@ -1198,6 +1203,10 @@ class StrategyBacktestService:
             overrides.get("score_min"),
             overrides.get("score_max"),
         )
+
+        if config.regime_filter and config.regime_filter.get("amv"):
+            if config.entry_fill != "open_t+1" or s.execution_backend == "minute_filter":
+                return _err("0AMV仅支持日线收盘信号、次日开盘买入，不支持当日收盘或分钟买入")
 
         if s.execution_backend == "minute_filter":
             # 分钟策略回测: 逐交易日回放 filter_minute_history (与实盘策略同源),
@@ -2305,6 +2314,14 @@ class StrategyBacktestService:
             return None
         allowed_states = set(regime_filter.get("states") or [])
         min_score = regime_filter.get("min_score")
+        amv_mode = regime_filter.get("amv")
+        if amv_mode:
+            from app.services.personal_amv import entry_mask
+            amv_mask = entry_mask(timestamp_labels, amv_mode)
+            if not allowed_states and min_score is None:
+                return amv_mask
+        else:
+            amv_mask = None
         if not allowed_states and min_score is None:
             return None
         if data_dir is None:
@@ -2322,13 +2339,14 @@ class StrategyBacktestService:
             for row in regime_df.iter_rows(named=True)
             if row.get("date") is not None
         }
-        return build_regime_filter_mask(
+        mask = build_regime_filter_mask(
             timestamp_labels,
             regime_filter,
             regime_by_date,
             required_start=required_start,
             required_end=required_end,
         )
+        return mask & amv_mask if amv_mask is not None else mask
 
     def _build_candidate_filter_mask(
         self,

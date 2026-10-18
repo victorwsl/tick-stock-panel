@@ -698,3 +698,30 @@ def test_full_mode_reports_factor_attribution():
     assert attribution["n_win"] == 1 and attribution["n_lose"] == 0
     assert attribution["factors"][0]["factor"] == "factor"
     assert attribution["factors"][0]["win_mean"] == 5.0
+
+
+def test_amv_gate_executes_next_open(tmp_path, monkeypatch):
+    from app.services import personal_amv
+    start = date(2024, 1, 1)
+    panel = pl.DataFrame([{
+        'symbol': 'A', 'name': 'A', 'date': start+timedelta(days=i),
+        'open': 10., 'high': 10., 'low': 10., 'close': 10.,
+        'volume': 1000., 'amount': 1000.,
+        'signal_limit_up': False, 'signal_limit_down': False,
+    } for i in range(4)])
+    monkeypatch.setattr(personal_amv, 'source_fingerprint', lambda: 'fixture')
+    monkeypatch.setattr(personal_amv, 'load_history', lambda: pl.DataFrame({
+        'date': [start+timedelta(days=i) for i in range(4)],
+        'amv_state': ['risk_off', 'probe', 'risk_off', 'confirmed'],
+    }))
+    engine = _EngineStub(panel, data_dir=tmp_path)
+    service = StrategyBacktestService(engine=engine, strategy_engine=_StrategyEngineStub(_strategy()))
+    result = service.run(StrategyBacktestConfig(strategy_id='test', symbols=None, start=start,
+        end=start+timedelta(days=3), matching='open_t+1', regime_filter={'amv': 'active'}))
+    assert result.error is None
+    # 1月2日收盘启动，只能1月3日开盘买；无额外T-1延迟。
+    assert engine.sim_matrix.entry[:, 0].tolist() == [0, 0, 1, 0]
+    assert result.config['regime_filter'] == {'amv': 'active'}
+    rejected = service.run(StrategyBacktestConfig(strategy_id='test', symbols=None, start=start,
+        end=start+timedelta(days=3), matching='close_t', regime_filter={'amv': 'active'}))
+    assert '次日开盘' in rejected.error
