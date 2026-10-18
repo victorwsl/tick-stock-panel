@@ -70,7 +70,8 @@ def dividend_yield(events, basic, day, diagnostics=None):
     if diagnostics is not None:
         diagnostics.extend({'date':day,'symbol':code,'reason':'同一登记/除息日存在不同派息金额，不能判断合并/重复/修订，整只股票本次缺失排除'} for code in sorted(excluded))
     e = e[~e.ts_code.isin(excluded)]
-    shares = basic[['ts_code','trade_date','total_share']].rename(columns={'trade_date':'record_date'})
+    shares = basic.loc[basic.trade_date.isin(e.record_date), ['ts_code','trade_date','total_share']].rename(
+        columns={'trade_date':'record_date'})
     e = e.merge(shares,on=['ts_code','record_date'],how='left',validate='many_to_one')
     missing = e.total_share.isna() | e.total_share.le(0)
     bad_shares = set(e.loc[missing,'ts_code'])
