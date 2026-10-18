@@ -113,3 +113,46 @@ it('切股后鼠标未离开图表, 竖虚线重新命中即恢复「至今/周�
   await act(async () => { surface.dispatchEvent(new MouseEvent('mouseleave')) })
   expect(host.textContent).not.toContain('至今')
 })
+
+
+it('回放把触发与成交放到K线外不同的行，保留真实日期及退出原因', async () => {
+  const markers = [
+    { date: DAYS[10], kind: 'buy' as const, phase: 'signal' as const, label: '买信号' },
+    { date: DAYS[11], kind: 'buy' as const, phase: 'fill' as const, label: '买入' },
+    { date: DAYS[50], kind: 'sell' as const, phase: 'signal' as const, label: '触发·跌破白线' },
+    { date: DAYS[51], kind: 'sell' as const, phase: 'fill' as const, label: '卖·跌破白线', detail: '延迟卖出<说明>' },
+  ]
+  await act(async () => root.render(
+    <EChartsCandlestick data={rows(10)} markers={markers} height={520}
+      showInfoBar={false} visibleBars="all" activeIndicators={['vol']} />,
+  ))
+  const option = chart.setOption.mock.calls.map(c => c[0]).find(o => o.grid)
+  const points = option.series.find((s: any) => s.name === 'K').markPoint.data
+  expect(points.map((p: any) => p.name)).toEqual(markers.map(m => m.date))
+  expect(points.map((p: any) => p.symbol)).toEqual(['diamond', 'circle', 'diamond', 'circle'])
+  expect(points[0].y).toBeGreaterThan(option.grid[0].top + option.grid[0].height)
+  expect(points[1].y).toBeLessThan(points[0].y)
+  expect(points[2].y).toBeLessThan(points[3].y)
+  expect(points[3].y).toBeLessThan(option.grid[0].top)
+  expect(points[3].label.formatter).toBe('卖·跌破白线')
+  expect(points[3].label.position).toBe('left')
+  expect(points[3].tooltip.formatter()).toContain('&lt;说明&gt;')
+  await act(async () => { chart.handlers.dataZoom?.() })
+  expect(lastMarkPoint()).toContain('卖·跌破白线')
+  expect(lastMarkPoint()).not.toContain('arrow')
+
+  // 用真实 ECharts 渲染同一个配置，避免只验证 mock 的配置对象。
+  // jsdom 无 Canvas；SVG 只需文字宽度估计，不依赖像素绘制。
+  const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    measureText: (text: string) => ({ width: text.length * 11 }),
+  } as any)
+  const real = await vi.importActual<typeof import('echarts')>('echarts')
+  const rendered = real.init(null, undefined, { renderer: 'svg', ssr: true, width: 1000, height: 520 })
+  try {
+    rendered.setOption(option)
+    const svg = rendered.renderToSVGString()
+    expect(svg).toContain('卖·跌破白线')
+    expect(svg).toContain('买信号')
+    expect(svg).not.toContain('NaN')
+  } finally { rendered.dispose(); context.mockRestore() }
+})

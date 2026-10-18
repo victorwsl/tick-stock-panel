@@ -35,6 +35,9 @@ export interface ChartMarker {
   date: string
   kind: 'buy' | 'sell' | 'neutral'
   label?: string
+  /** 回放信号与成交分行显示在主图外。 */
+  phase?: 'signal' | 'fill'
+  detail?: string
   /** 若为 true，标记放在蜡烛上方（如涨停连板标签）。 */
   above?: boolean
   /** 自定义标签颜色，覆盖默认的 kind 对应色。 */
@@ -468,26 +471,10 @@ function buildSubInfoGraphics(
   return graphics
 }
 
-function buildOption(
-  data: OHLC[],
-  dates: string[],
-  dateIndexMap: Map<string, number>,
-  markers: ChartMarker[] | undefined,
-  ranges: ChartRange[] | undefined,
-  priceLines: ChartPriceLine[] | undefined,
-  showMA: boolean,
-  compact: boolean,
-  activeIndicators: string[],
-  containerHeight: number,
-  infoIdx: number,
-  linkedPrice: number | null | undefined,
-  volumeCompare: VolumeCompareConfig,
-  addedDate: string | null | undefined,
-): EChartsOption {
-  const candleData = data.map(d => [d.open, d.close, d.low, d.high])
-
-  const hasMA = showMA && data.some(d => d.zx_white != null || d.ma5 != null || d.ma10 != null || d.ma20 != null || d.ma60 != null)
-
+function buildMarkerPoints(
+  data: OHLC[], dateIndexMap: Map<string, number>, markers: ChartMarker[] | undefined,
+  compact: boolean, top: number, bottom: number,
+): any[] {
   const markPointData: any[] = []
   if (markers && markers.length > 0) {
     for (const m of markers) {
@@ -497,7 +484,31 @@ function buildOption(
       const isBuy = m.kind === 'buy'
       const isSell = m.kind === 'sell'
 
-      if (m.above) {
+      if (m.phase) {
+        const signal = m.phase === 'signal'
+        const color = m.color ?? (isBuy ? THEME.bull : THEME.bear)
+        const escape = (value: string) => value.replace(/[&<>"']/g, c => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        })[c]!)
+        markPointData.push({
+          name: m.date, coord: [m.date, isBuy ? d.low : d.high],
+          // 日期仍由x轴定位；y固定在预留事件区，缩放不遮住K线。
+          y: isBuy ? bottom + (signal ? 54 : 33) : top - (signal ? 36 : 15),
+          symbol: signal ? 'diamond' : 'circle', symbolSize: signal ? 6 : 7,
+          itemStyle: { color: signal ? CT().tooltipBg : color, borderColor: color, borderWidth: 1.5 },
+          label: {
+            show: true, formatter: m.label ?? '', position: idx >= data.length * 0.8 ? 'left' : 'right', distance: 5,
+            color: CT().tooltipText, fontSize: 11, width: compact ? 78 : 120, overflow: 'truncate',
+            backgroundColor: CT().tooltipBg, padding: [2, 3], borderRadius: 2,
+          },
+          tooltip: {
+            show: true, trigger: 'item', backgroundColor: CT().tooltipBg,
+            borderColor: CT().border, textStyle: { color: CT().tooltipText, fontSize: 12 },
+            formatter: () => escape(m.detail ?? `${m.date} ${m.label ?? ''}`).replace(/\n/g, '<br/>'),
+          },
+          z: 100,
+        })
+      } else if (m.above) {
         const dotColor = m.color ?? (isBuy ? '#FACC15' : CT().text)
         if (compact) {
           markPointData.push({
@@ -538,11 +549,35 @@ function buildOption(
     }
   }
 
+  return markPointData
+}
+
+function buildOption(
+  data: OHLC[],
+  dates: string[],
+  dateIndexMap: Map<string, number>,
+  markers: ChartMarker[] | undefined,
+  ranges: ChartRange[] | undefined,
+  priceLines: ChartPriceLine[] | undefined,
+  showMA: boolean,
+  compact: boolean,
+  activeIndicators: string[],
+  containerHeight: number,
+  infoIdx: number,
+  linkedPrice: number | null | undefined,
+  volumeCompare: VolumeCompareConfig,
+  addedDate: string | null | undefined,
+): EChartsOption {
+  const candleData = data.map(d => [d.open, d.close, d.low, d.high])
+
+  const hasMA = showMA && data.some(d => d.zx_white != null || d.ma5 != null || d.ma10 != null || d.ma20 != null || d.ma60 != null)
+
   // ====== 布局计算 ======
   const left = 60
   const right = 20
-  const topPad = 8
-  const candleBottomPad = 22
+  const replay = markers?.some(m => m.phase) ?? false
+  const topPad = replay ? 52 : 8
+  const candleBottomPad = replay ? 72 : 22
 
   let subTotalH = 0
   const activeSubDefs: SubChartDef[] = []
@@ -555,6 +590,8 @@ function buildOption(
   if (activeSubDefs.length > 0) subTotalH += activeSubDefs.length * SUB_GAP_PX
 
   const candleAvail = Math.max(containerHeight - topPad - candleBottomPad - subTotalH, 100)
+
+  const markPointData = buildMarkerPoints(data, dateIndexMap, markers, compact, topPad, topPad + candleAvail)
 
   const grids: any[] = []
   const xAxes: any[] = []
@@ -963,7 +1000,8 @@ export function EChartsCandlestick({
   const mainInfoBarH = showInfoBar ? 40 : 0
   const minCandleH = 120
 
-  const chartHeight = Math.max(height - mainInfoBarH, 8 + minCandleH + 14 + subTotalH)
+  const replay = showMarkersProp && markers?.some(m => m.phase)
+  const chartHeight = Math.max(height - mainInfoBarH, (replay ? 52 + 72 : 8 + 22) + minCandleH + subTotalH)
   chartHeightRef.current = chartHeight
   subTotalHRef.current = subTotalH
 
@@ -1192,52 +1230,14 @@ export function EChartsCandlestick({
     const mkrs = showMarkersProp ? markers : undefined
     const compact = compactRef.current
     const seriesUpdates: any[] = []
-    const markPointData: any[] = []
-    for (const m of mkrs ?? []) {
-      const idx = dateIndexMap.get(m.date)
-      if (idx == null) continue
-      const d = data[idx]
-      const isBuy = m.kind === 'buy'
-      const isSell = m.kind === 'sell'
-      if (m.above) {
-        const dotColor = m.color ?? (isBuy ? '#FACC15' : CT().text)
-        if (compact) {
-          markPointData.push({
-            name: m.date, coord: [m.date, d.high],
-            symbol: 'circle', symbolSize: 4, symbolOffset: [0, -10],
-            itemStyle: { color: dotColor, cursor: 'pointer' },
-            label: { show: false }, z: 100, zlevel: 10,
-          })
-        } else {
-          markPointData.push({
-            name: m.date, coord: [m.date, d.high],
-            symbol: 'circle', symbolSize: 12, symbolOffset: [0, -2],
-            itemStyle: { color: 'transparent' },
-            label: {
-              show: true, formatter: m.label ?? '', position: 'top', distance: 0,
-              color: dotColor, fontSize: 10, fontWeight: 'normal',
-              fontFamily: 'JetBrains Mono, monospace',
-            },
-            z: 100, zlevel: 10,
-          })
-        }
-      } else {
-        markPointData.push({
-          name: m.label ?? '',
-          coord: [m.date, isBuy ? d.low : d.high],
-          symbol: 'arrow', symbolSize: 12,
-          symbolRotate: isBuy ? 0 : 180,
-          symbolOffset: isBuy ? [0, '60%'] : [0, '-60%'],
-          itemStyle: { color: isBuy ? THEME.bull : isSell ? THEME.bear : CT().text },
-          label: {
-            show: !!m.label, formatter: m.label ?? '',
-            position: isBuy ? 'bottom' : 'top', distance: 8,
-            color: CT().text, fontSize: 10,
-            fontFamily: 'JetBrains Mono, monospace',
-          },
-        })
-      }
-    }
+    const replay = mkrs?.some(m => m.phase) ?? false
+    const top = replay ? 52 : 8
+    const subHeight = activeIndicators.reduce((total, key) => {
+      const def = SUB_CHARTS.find(s => s.key === key)
+      return total + (def ? INFO_BAR_H + def.height + SUB_GAP_PX : 0)
+    }, 0)
+    const bottom = top + Math.max(chartHeight - top - (replay ? 72 : 22) - subHeight, 100)
+    const markPointData = buildMarkerPoints(data, dateIndexMap, mkrs, compact, top, bottom)
     if (mkrs?.length) {
       seriesUpdates.push({
         name: 'K',

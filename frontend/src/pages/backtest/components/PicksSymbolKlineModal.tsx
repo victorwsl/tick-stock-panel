@@ -10,6 +10,8 @@ import { useListNav } from '@/lib/useListNav'
 import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { boardTag } from '@/lib/board'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
+import { cnSignal } from '@/lib/signals'
+import { useCustomSignalNames } from '@/lib/useCustomSignalNames'
 
 interface Props {
   /** 选中的标的 (null = 关闭) */
@@ -29,6 +31,7 @@ interface Props {
 /** 「策略分析」行的标的级K线弹窗 (单笔回放见 TradeKlineModal) */
 export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, navList, onNavigate, onClose }: Props) {
   const backdrop = useDialogBackdrop(onClose)
+  const signalNames = useCustomSignalNames()
 
   // onClose 只有 ESC 用; onNavigate 由 useListNav 内部承接 (支持内联 lambda)
   const onCloseRef = useRef(onClose)
@@ -63,36 +66,46 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
   const { trades, stat, name } = view
 
   const markers = useMemo<ChartMarker[]>(() => {
-    type Agg = { count: number; lo: number; hi: number }
-    // 同日同方向多笔合成单个箭头 (多箭头会重叠); 价格异则标签显示区间
-    const byDate = new Map<string, { buy?: Agg; sell?: Agg }>()
-    const add = (date: string, side: 'buy' | 'sell', price: number) => {
-      let g = byDate.get(date)
-      if (!g) { g = {}; byDate.set(date, g) }
-      const s = g[side]
-      if (s) {
-        s.count += 1
-        s.lo = Math.min(s.lo, price)
-        s.hi = Math.max(s.hi, price)
-      } else {
-        g[side] = { count: 1, lo: price, hi: price }
-      }
+    const reasons: Record<string, string> = {
+      stop_loss: '止损', take_profit: '止盈', trailing_stop: '移动止损',
+      trailing_take_profit: '回撤止盈', max_hold: '持有到期',
+      pending_exit: '待卖', end: '期末退出', signal: '退出信号',
     }
-    const label = (s: Agg) => {
-      const range = s.lo === s.hi ? fmtPrice(s.lo) : `${fmtPrice(s.lo)}~${fmtPrice(s.hi)}`
-      return s.count > 1 ? `${range} ×${s.count}` : range
+    const signalName = (id: string | null | undefined, fallback: string) => {
+      if (id === 'zx_below_white') return '跌破白线'
+      if (id === 'zx_pullback_restrength') return '回调再转强'
+      return id ? cnSignal(id, signalNames) : fallback
+    }
+    // 同日同方向同阶段合并；信号日期缺失时不能用成交日倒推。
+    const groups = new Map<string, ChartMarker & { count: number; details: string[]; reasons: Set<string> }>()
+    const add = (date: string | null | undefined, kind: 'buy' | 'sell', phase: 'signal' | 'fill', reason: string, detail: string) => {
+      if (!date) return
+      const day = String(date).slice(0, 10)
+      const key = `${day}:${kind}:${phase}`
+      const old = groups.get(key)
+      if (old) { old.count++; old.details.push(detail); old.reasons.add(reason); return }
+      groups.set(key, { date: day, kind, phase, count: 1, details: [detail], reasons: new Set([reason]) })
     }
     for (const t of trades) {
-      add(String(t.entry_date).slice(0, 10), 'buy', Number(t.entry_price))
-      add(String(t.exit_date).slice(0, 10), 'sell', Number(t.exit_price))
+      const entry = signalName(t.entry_signal_id, '入场信号')
+      const exit = t.exit_reason === 'signal'
+        ? signalName(t.exit_signal_id, '退出信号')
+        : reasons[t.exit_reason] ?? t.exit_reason
+      add(t.entry_signal_date, 'buy', 'signal', entry, `买入信号：${entry}`)
+      add(t.entry_date, 'buy', 'fill', '', `买入成交 ${fmtPrice(t.entry_price)}；信号日 ${t.entry_signal_date || '未记录'}`)
+      // 期末退出是回测边界操作，不冒充策略退出触发；待卖仅画已记录的触发。
+      if (t.exit_reason !== 'end') add(t.exit_signal_date, 'sell', 'signal', exit, `退出触发：${exit}`)
+      if (t.exit_reason === 'pending_exit') continue
+      add(t.exit_date, 'sell', 'fill', exit, `卖出成交 ${fmtPrice(t.exit_price)}；原因：${exit}；触发日 ${t.exit_signal_date || '未记录'}${t.blocked_exit_days ? `；受阻${t.blocked_exit_days}天` : ''}`)
     }
-    const out: ChartMarker[] = []
-    for (const [date, g] of byDate) {
-      if (g.buy) out.push({ date, kind: 'buy', label: label(g.buy) })
-      if (g.sell) out.push({ date, kind: 'sell', label: label(g.sell) })
-    }
-    return out.sort((a, b) => a.date.localeCompare(b.date))
-  }, [trades])
+    return [...groups.values()].map(({ count, details, reasons, ...m }) => {
+      const reason = [...reasons].filter(Boolean).join('、')
+      const label = m.phase === 'signal'
+        ? (m.kind === 'buy' ? '买信号' : `触发·${reason}`)
+        : (m.kind === 'buy' ? '买入' : `卖·${reason}`)
+      return { ...m, label: label + (count > 1 ? ` ×${count}` : ''), detail: [m.date, ...details].join('\n') }
+    }).sort((a, b) => a.date.localeCompare(b.date))
+  }, [trades, signalNames])
 
   const tag = symbol ? boardTag(symbol) : ''
   const dateRange = useMemo(() => ({ start: periodStart, end: periodEnd }), [periodStart, periodEnd])
@@ -136,7 +149,7 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
                     回测 {periodStart} ~ {periodEnd} · {trades.length} 笔交易
                   </div>
                   <div className="mt-1 text-[10px] text-muted/70">
-                    ▲ 买入(红) · ▼ 卖出(绿) · 箭头旁为成交价 · 同日多笔合并显示
+                    图下买入、图上卖出 · 空心菱形为信号/触发，实心圆为成交 · 卖出旁注明原因，悬停看日期与价格 · 同日多笔合并
                   </div>
                 </div>
 
