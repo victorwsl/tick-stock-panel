@@ -334,3 +334,16 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
 
 注册后, 插件和用户 YAML 自定义源走**完全相同的路由路径**(services 层的
 `provider_has_dataset` / `get_provider` 调用), 无需额外集成代码。
+
+
+### 个人本地行情插件
+
+`local_parquet`只读本地行情与显式补数缓存。日线的可选字段
+`exchange_pre_close`表示交易所当日涨跌幅参考价（未复权，元），保留至enriched；
+存在且有效时，日涨跌幅使用`raw_close / exchange_pre_close - 1`，避免除权因子
+精度截断把平盘算成微涨。缺失时仍沿用原有复权收盘价计算，旧插件无需修改。
+累计复权因子先转换成单次事件比值，再交标准指标流水线。
+配置、补数命令与验收边界见[个人使用入口](personal/README.md)。
+
+
+个人fork的 `local_parquet` 也实现 `financial`：`get_financials(table, symbols, latest_only)`，表为metrics/income/balance_sheet/cash_flow/shares。金额元、比率百分点、日期ISO；三表实际公告日优先，保留每次公告，空缺不伪造。适配与限制见 [当前数据与限制](personal/README.md)。

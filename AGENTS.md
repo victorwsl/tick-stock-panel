@@ -1,5 +1,7 @@
 # AI 开发入口
 
+本个人fork先读 [docs/personal/README.md](docs/personal/README.md) 和其中的唯一施工方案；当前为隔离股票/ETF/指数与板块研究试用，尚未通过交易回测验收。
+
 修改、调试或审查本仓库前，必须完整阅读并遵循根目录的 [`CONTRIBUTING.md`](CONTRIBUTING.md)。其中定义了项目架构、数据契约、数据源插件化、缓存与性能要求、测试矩阵以及 PR 复审和合并标准。
 
 涉及代码二次开发、前端插槽、后端可替换策略、扩展注册或上游升级兼容时，还必须阅读 [`docs/secondary-development.md`](docs/secondary-development.md)。该文档区分当前已实现能力与目标扩展契约；不得根据设计示例虚构尚不存在的 API。
