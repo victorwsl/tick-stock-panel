@@ -5,13 +5,16 @@ import { DatePicker } from '@/components/DatePicker'
 import { EmptyState } from '@/components/EmptyState'
 import { toast } from '@/components/Toast'
 import { WatchlistGroupMenu } from '@/components/WatchlistAddMenu'
-import { api, type FactorBatchItem, type FactorColumn } from '@/lib/api'
+import { api, type FactorBatchItem, type FactorBatchResult, type FactorColumn } from '@/lib/api'
 import { fmtPct, priceColorClass } from '@/lib/format'
 import { QK } from '@/lib/queryKeys'
 import { FactorBacktest } from './FactorBacktest'
 import { AutoMiningDialog } from './AutoMiningDialog'
 import { AddFactorSignalDialog } from './AddFactorSignalDialog'
 import { factorBatchCandidate } from './researchCandidates'
+import { FactorBatchHistory } from './components/FactorBatchHistory'
+import { FactorResearchOptions, type PredictionHorizon } from './components/FactorResearchOptions'
+import { FactorResearchSummary } from './components/FactorResearchSummary'
 
 const formatDate = (value: Date) => value.toISOString().slice(0, 10)
 const monthsAgo = (months: number) => {
@@ -37,6 +40,9 @@ const VERDICT_META: Record<Verdict, { label: string; cls: string }> = {
 // 服务端判读优先 (metrics_v2: NW t ≥ 2 显著 且 BH q ≤ 0.1), 缺失时降级 P0 经验规则
 const verdictOf = (item: FactorBatchItem): Verdict => {
   if (item.error) return 'error'
+  if (item.prediction_audit?.horizon && (item.prediction_audit.inference_status === 'descriptive_only' || item.t_newey_west == null)) {
+    return Math.abs(item.ic_mean ?? 0) >= 0.02 ? 'edge' : 'invalid'
+  }
   const ic = Math.abs(item.ic_mean ?? 0)
   const ir = Math.abs(item.ir ?? 0)
   if (item.t_newey_west != null) {
@@ -68,7 +74,7 @@ const PRESETS: PresetDef[] = [
 
 const INTRO_STORAGE_KEY = 'factors-intro-collapsed'
 
-// 表头排序: IC/IR/t 值/多空收益按 |值| 排 (正负都是信号), 胜率/回撤按原值排
+// 表头排序保留数值正负号；缺失值始终置后。
 const SORT_GETTERS: Record<SortKey, (item: FactorBatchItem) => number | null | undefined> = {
   ic: item => item.ic_mean,
   ir: item => item.ir,
@@ -77,7 +83,6 @@ const SORT_GETTERS: Record<SortKey, (item: FactorBatchItem) => number | null | u
   win_rate: item => item.ic_win_rate,
   drawdown: item => item.long_short_max_drawdown,
 }
-const ABS_SORT_KEYS: ReadonlySet<SortKey> = new Set(['ic', 'ir', 'return', 't_nw'])
 
 function SortableTh({ label, sortKeyName, sortKey, sortAsc, onSort, className, title }: {
   label: string
@@ -109,16 +114,18 @@ function SortableTh({ label, sortKeyName, sortKey, sortAsc, onSort, className, t
   )
 }
 
-function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: string) => void; focusFactor?: string }) {
+function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: string, config?: Record<string, any>) => void; focusFactor?: string }) {
   const queryClient = useQueryClient()
   const initialized = useRef(false)
+  const [batchResult, setBatchResult] = useState<FactorBatchResult | null>(null)
   const [selected, setSelected] = useState<string[]>([])
   const [symbols, setSymbols] = useState('')
   const [assetType, setAssetType] = useState<'stock' | 'etf'>('stock')
-  const [start, setStart] = useState(monthsAgo(3))
+  const [start, setStart] = useState(monthsAgo(60))
+  const [predictionHorizon, setPredictionHorizon] = useState<PredictionHorizon>(60)
   const [end, setEnd] = useState(TODAY)
   const [nGroups, setNGroups] = useState(5)
-  const [rebalance, setRebalance] = useState<'daily' | 'weekly' | 'monthly'>('daily')
+  const [rebalance, setRebalance] = useState<'daily' | 'weekly' | 'monthly'>('monthly')
   const [fees, setFees] = useState('2')
   const [sortKey, setSortKey] = useState<SortKey>('ic')
   const [sortAsc, setSortAsc] = useState(false)
@@ -192,6 +199,7 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
   const run = useMutation({
     mutationFn: () => api.factorBatch({
       factor_names: selected,
+      prediction_horizon: predictionHorizon,
       symbols: symbols ? symbols.split(',').map(value => value.trim()).filter(Boolean) : null,
       asset_type: assetType,
       start: start || null,
@@ -200,11 +208,12 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
       rebalance,
       fees_pct: Number(fees) / 10000,
     }),
+    onSuccess: setBatchResult,
   })
   const save = useMutation({
     mutationFn: (item: FactorBatchItem) => {
-      if (!run.data) throw new Error('暂无批量结果')
-      return api.researchCandidateCreate(factorBatchCandidate(run.data, item))
+      if (!batchResult) throw new Error('暂无批量结果')
+      return api.researchCandidateCreate(factorBatchCandidate(batchResult, item))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QK.researchCandidates })
@@ -215,14 +224,13 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
 
   const sortedResults = useMemo(() => {
     const getter = SORT_GETTERS[sortKey]
-    const useAbs = ABS_SORT_KEYS.has(sortKey)
     const value = (item: FactorBatchItem) => {
       const raw = getter(item)
       if (raw == null || !Number.isFinite(raw)) return sortAsc ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY
-      return useAbs ? Math.abs(raw) : raw
+      return raw
     }
-    return [...(run.data?.results ?? [])].sort((left, right) => (sortAsc ? value(left) - value(right) : value(right) - value(left)))
-  }, [run.data, sortKey, sortAsc])
+    return [...(batchResult?.results ?? [])].sort((left, right) => (sortAsc ? value(left) - value(right) : value(right) - value(left)))
+  }, [batchResult, sortKey, sortAsc])
 
   const applySort = (key: SortKey) => {
     if (key === sortKey) {
@@ -233,8 +241,8 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
     }
   }
 
-  // 结论句: 有效数按经验规则统计; 最强按 |IC| 取 (与默认排序口径一致)
-  const computableResults = useMemo(() => (run.data?.results ?? []).filter(item => !item.error), [run.data])
+  // 结论句：有效数按经验规则统计；最强按 |IC| 取，包含反向预测能力。
+  const computableResults = useMemo(() => (batchResult?.results ?? []).filter(item => !item.error), [batchResult])
   const validCount = useMemo(() => computableResults.filter(item => verdictOf(item) === 'valid').length, [computableResults])
   const bestFactor = useMemo(() => {
     let best: FactorBatchItem | null = null
@@ -430,19 +438,21 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
             </div>
           </div>
           <div className="mt-2 flex rounded-input bg-base/60 p-0.5">
-            {[3, 6, 12].map(months => (
+            {[24, 36, 60, 120].map(months => (
               <button
                 key={months}
                 type="button"
                 onClick={() => { setStart(monthsAgo(months)); setEnd(TODAY) }}
                 className="flex-1 rounded-btn px-2 py-1 text-[10px] text-muted transition-colors hover:bg-elevated hover:text-secondary"
               >
-                {months === 12 ? '1年' : `${months}个月`}
+                {`${months / 12}年`}
               </button>
             ))}
           </div>
         </div>
 
+        <FactorResearchOptions horizon={predictionHorizon} onHorizon={setPredictionHorizon}
+          onRange={years => { setStart(monthsAgo(years * 12)); setEnd(TODAY) }} />
         <div className="grid grid-cols-3 gap-2">
           <label className="block">
             <span className="mb-1 block text-[10px] text-muted">调仓</span>
@@ -478,6 +488,7 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
       </section>
 
       <section className="min-w-0 bg-base/15 xl:overflow-y-auto">
+        <FactorBatchHistory result={batchResult} pending={run.isPending} onLoad={setBatchResult} />
         {run.isPending && (
           <div className="m-3 flex items-center gap-3 rounded-btn border border-accent/30 bg-accent/5 px-3 py-2.5 text-xs text-secondary">
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-accent/25 border-t-accent" />
@@ -489,22 +500,23 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
             {String((run.error as Error).message)}
           </div>
         )}
-        {run.data?.error && (
-          <div className="m-3 rounded-btn border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">{run.data.error}</div>
+        {batchResult?.error && (
+          <div className="m-3 rounded-btn border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">{batchResult.error}</div>
         )}
-        {!run.data && !run.isPending && (
-          <EmptyState icon={Search} title="运行因子筛选" hint="批量结果将按预测能力排序。" />
+        {!batchResult && !run.isPending && (
+          <EmptyState icon={Search} title="运行因子筛选" hint="批量结果默认按 IC 从大到小排序。" />
         )}
-        {run.data && !run.data.error && (
+        {batchResult && !batchResult.error && (
           <div>
+            <div className="m-3"><FactorResearchSummary config={batchResult.config} items={batchResult.results} /></div>
             <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
               <div>
                 <div className="text-sm font-medium text-foreground">筛选结果</div>
                 <div className="mt-0.5 flex items-center gap-3 text-[10px] text-muted">
-                  <span>{run.data.results.length} 个因子</span>
-                  <span>{run.data.n_symbols} 只标的</span>
-                  <span>{run.data.n_dates} 个交易日</span>
-                  <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{run.data.elapsed_ms.toFixed(0)} ms</span>
+                  <span>{batchResult.results.length} 个因子</span>
+                  <span>{batchResult.n_symbols} 只标的</span>
+                  <span>{batchResult.n_dates} 个交易日</span>
+                  <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{batchResult.elapsed_ms.toFixed(0)} ms</span>
                 </div>
                 {computableResults.length > 0 && (
                   <div className="mt-1 text-[11px] text-secondary">
@@ -520,7 +532,7 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
                   </div>
                 )}
               </div>
-              <div className="ml-auto self-center text-[10px] text-muted" title="点击数值列表头可切换排序键与升/降序；IC/IR/t 值/多空收益按绝对值排序（正负都是信号）。">
+              <div className="ml-auto self-center text-[10px] text-muted" title="点击数值列表头可切换升/降序；按带正负号的数值排序，缺失值始终置后。">
                 点击表头排序
               </div>
             </div>
@@ -528,12 +540,12 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
               <table className="w-full min-w-[820px] text-xs">
                 <thead className="sticky top-0 bg-elevated text-left text-[11px] text-secondary">
                   <tr>
-                    <th className="w-12 px-3 py-2.5 text-center font-medium" title="按当前排序键排序的名次，默认按 |IC|。">排名</th>
+                    <th className="w-12 px-3 py-2.5 text-center font-medium" title="按当前排序键排序的名次，默认按 IC 从大到小（保留正负号）。">排名</th>
                     <th className="px-3 py-2.5 font-medium">因子</th>
-                    <SortableTh label="预测力 IC" sortKeyName="ic" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="每天用因子给股票打分、与次日真实涨跌算相关性（Rank IC）的均值。|IC|≥0.02 且稳定即有预测力；负值同样有效（反向使用）。" />
+                    <SortableTh label="预测力 IC" sortKeyName="ic" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="每日因子排名与所选预测期限收益排名的相关性（Rank IC）均值。|IC|≥0.02 且稳定即有预测力；负值同样有效（反向使用）。" />
                     <SortableTh label="稳定度 IR" sortKeyName="ir" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="IC 均值 ÷ IC 波动。≥0.3 值得关注，≥0.5 相当稳定。" />
-                    <SortableTh label="t 值(NW)" sortKeyName="t_nw" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="Newey-West HAC 稳健 t 值（滞后 1）：|t|≥2 视为统计显著；悬停查看多重检验校正后的 q 值（≤0.1 通过）。样本不足显示 —。" />
-                    <SortableTh label="预测日占比" sortKeyName="win_rate" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="IC 与预测方向一致的天数占比。50% 是抛硬币，55%+ 不错。" />
+                    <SortableTh label="t 值(NW)" sortKeyName="t_nw" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="Newey-West HAC 稳健 t 值（固定H日预测使用max(1,H−1)阶滞后）：|t|≥2 视为统计显著；悬停查看多重检验校正后的 q 值（≤0.1 通过）。样本不足显示 —。" />
+                    <SortableTh label="预测日占比" sortKeyName="win_rate" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="IC 为正的天数占比。负向因子应结合 IC 符号解读，该比例不是交易胜率。" />
                     <SortableTh label="多空收益" sortKeyName="return" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="每期买因子最高组、（模拟）卖最低组的累计收益差。A 股做空受限，此列为理论口径。" />
                     <SortableTh label="最大回撤" sortKeyName="drawdown" sortKey={sortKey} sortAsc={sortAsc} onSort={applySort} className="px-3 py-2.5 text-right" title="上述多空组合最痛的一段亏损幅度，衡量拿得住不住。" />
                     <th className="w-16 px-3 py-2.5 text-center font-medium" title="经验规则：|IC|≥0.02 且 |IR|≥0.3 为有效；其一达标为边缘。">结论</th>
@@ -542,7 +554,7 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
                 </thead>
                 <tbody>
                   {sortedResults.map((item, index) => (
-                    <tr key={item.factor_name} className="border-t border-border/70 transition-colors hover:bg-elevated/40">
+                    <tr key={item.factor_name} title={item.prediction_audit?.horizon ? `有效IC ${item.prediction_audit.n_ic_dates}天，不重叠区间 ${item.prediction_audit.nonoverlap_intervals}个。${item.prediction_audit.warnings.join(' ')}` : undefined} className="border-t border-border/70 transition-colors hover:bg-elevated/40">
                       <td className="px-3 py-3 text-center font-mono text-muted">{index + 1}</td>
                       <td className="px-3 py-3">
                         <div className="font-medium text-foreground">
@@ -561,7 +573,7 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
                       <td
                         className={`px-3 py-3 text-right font-mono ${item.t_newey_west != null && Math.abs(item.t_newey_west) >= 2 ? 'text-foreground' : 'text-muted'}`}
                         title={item.t_newey_west != null
-                          ? `NW t=${item.t_newey_west.toFixed(2)}${item.q_value != null ? `，BH q=${item.q_value.toFixed(3)}` : ''}（${item.q_value != null && item.q_value <= 0.1 ? '通过' : '未通过'}多重检验校正）`
+                          ? `NW t=${item.t_newey_west.toFixed(2)}，滞后=${item.nw_lag ?? '旧版'}${item.q_value != null ? `，BH q=${item.q_value.toFixed(3)}` : ''}（${item.q_value != null && item.q_value <= 0.1 ? '通过' : '未通过'}多重检验校正）`
                           : '样本不足，无法计算'}
                       >
                         {item.t_newey_west == null ? '—' : item.t_newey_west.toFixed(2)}
@@ -598,7 +610,7 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
                           </button>
                           <button
                             type="button"
-                            onClick={() => onInspect(item.factor_name)}
+                            onClick={() => onInspect(item.factor_name, batchResult.config)}
                             disabled={!!item.error}
                             className="flex h-7 w-7 items-center justify-center rounded-btn text-muted transition-colors hover:bg-elevated hover:text-foreground disabled:opacity-40"
                             title="单因子检验"
@@ -625,6 +637,7 @@ function BatchDiscovery({ onInspect, focusFactor }: { onInspect: (factorName: st
 export function FactorDiscovery({ focusFactor }: { focusFactor?: string } = {}) {
   const [view, setView] = useState<View>('batch')
   const [detailFactor, setDetailFactor] = useState('momentum_20d')
+  const [detailConfig, setDetailConfig] = useState<Record<string, any> | undefined>()
   const [autoOpen, setAutoOpen] = useState(false)
   const [introCollapsed, setIntroCollapsed] = useState(() => {
     try {
@@ -639,8 +652,9 @@ export function FactorDiscovery({ focusFactor }: { focusFactor?: string } = {}) 
       localStorage.setItem(INTRO_STORAGE_KEY, '1')
     } catch { /* 隐私模式等场景忽略 */ }
   }
-  const inspect = (factorName: string) => {
+  const inspect = (factorName: string, config?: Record<string, any>) => {
     setDetailFactor(factorName)
+    setDetailConfig(config)
     setView('single')
   }
   return (
@@ -650,7 +664,7 @@ export function FactorDiscovery({ focusFactor }: { focusFactor?: string } = {}) 
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
           <div className="min-w-0 flex-1">
             <span className="font-medium text-foreground">三步看懂本页：</span>
-            ① 因子 = 给股票打分排序的特征（如 20日涨幅、换手率变化）；② 本页检验过去哪些特征真的能预测次日涨跌；③ IC = 预测准确度（绝对值越大越准，负值反向用），IR = 稳定度（越大越稳）。
+            ① 因子 = 给股票打分排序的特征（如 20日涨幅、换手率变化）；② 本页检验过去哪些特征与未来20／60／250交易日收益相关；③ IC衡量排序关联，负值表示反向关系。默认预测60交易日、月度调仓，长期结果需足够成熟历史。
           </div>
           <button
             type="button"
@@ -708,7 +722,7 @@ export function FactorDiscovery({ focusFactor }: { focusFactor?: string } = {}) 
         </div>
         {view === 'single' && (
           <div className="h-full">
-            <FactorBacktest key={detailFactor} initialFactorName={detailFactor} />
+            <FactorBacktest key={detailFactor} initialFactorName={detailFactor} initialConfig={detailConfig} />
           </div>
         )}
       </div>

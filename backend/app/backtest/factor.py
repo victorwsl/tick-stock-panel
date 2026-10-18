@@ -41,6 +41,7 @@ FACTOR_COLUMNS: list[dict] = _factor_columns_view()
 FACTOR_WARMUP_DAYS = 120
 FACTOR_METHODOLOGY_VERSION = "factor_v2"
 _DAILY_FORWARD_HORIZONS = (1, 3, 5)
+PREDICTION_HORIZONS = (20, 60, 250)
 
 
 @dataclass
@@ -57,6 +58,7 @@ class FactorConfig:
     asset_type: str = "stock"
     commission_pct: float | None = None
     stamp_tax_pct: float | None = None
+    prediction_horizon: Literal[20, 60, 250] | None = None
 
 
 @dataclass
@@ -99,6 +101,8 @@ class FactorResult:
     yearly_ic: list[dict] = field(default_factory=list)
     ic_decay: list[dict] = field(default_factory=list)
     regime_stats: list[dict] = field(default_factory=list)
+    prediction_audit: dict = field(default_factory=dict)
+    horizon_quantiles: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -115,6 +119,7 @@ class FactorBatchConfig:
     asset_type: str = "stock"
     commission_pct: float | None = None
     stamp_tax_pct: float | None = None
+    prediction_horizon: Literal[20, 60, 250] | None = None
 
 
 @dataclass
@@ -138,6 +143,8 @@ class FactorBatchItem:
     yearly_ic: list[dict] = field(default_factory=list)
     ic_decay: list[dict] = field(default_factory=list)
     regime_stats: list[dict] = field(default_factory=list)
+    prediction_audit: dict = field(default_factory=dict)
+    horizon_quantiles: list[dict] = field(default_factory=list)
     # metrics_v2 (P3): NW HAC t 值 (滞后=1, 日频 1 日前瞻) 与 BH-FDR q 值; 样本不足为 None
     t_naive: float | None = None
     t_newey_west: float | None = None
@@ -202,6 +209,8 @@ class FactorBacktestService:
             config,
             trading_dates=trading_dates,
         )
+        if config.prediction_horizon is not None:
+            panel = self._attach_prediction_returns(panel, config, trading_dates=trading_dates)
         evaluate_kwargs = (
             {"regime_by_date": regime_by_date}
             if regime_by_date is not None
@@ -267,6 +276,8 @@ class FactorBacktestService:
             config,
             trading_dates=trading_dates,
         )
+        if config.prediction_horizon is not None:
+            panel = self._attach_prediction_returns(panel, config, trading_dates=trading_dates)
 
         metadata = {item["id"]: item for item in FACTOR_COLUMNS}
         fundamentals_missing = (
@@ -289,6 +300,7 @@ class FactorBacktestService:
                 stamp_tax_pct=config.stamp_tax_pct,
                 slippage_bps=config.slippage_bps,
                 asset_type=config.asset_type,
+                prediction_horizon=config.prediction_horizon,
             )
             meta = metadata.get(factor_name, {})
             if factor_name in FUNDAMENTAL_FACTOR_NAMES and fundamentals_missing:
@@ -315,10 +327,11 @@ class FactorBacktestService:
                     **evaluate_kwargs,
                 )
                 long_short = result.long_short_stats
-                # metrics_v2: 由 IC 序列推导 NW HAC t 值与 p 值 (日频 1 日前瞻 → 滞后 1)
+                # Fixed-horizon daily IC uses H-1 HAC lags; never fall back to naive inference.
                 ic_values = [row.get("ic") for row in result.ic_series]
                 t_naive = stats_v2.naive_t(ic_values)
-                nw = stats_v2.newey_west_t(ic_values, lag=1)
+                nw_lag = max(1, (config.prediction_horizon or 1) - 1)
+                nw = stats_v2.newey_west_t(ic_values, lag=nw_lag)
                 items.append(FactorBatchItem(
                     factor_name=factor_name,
                     label=str(meta.get("label", factor_name)),
@@ -335,16 +348,18 @@ class FactorBacktestService:
                     yearly_ic=result.yearly_ic,
                     ic_decay=result.ic_decay,
                     regime_stats=result.regime_stats,
+                    prediction_audit=result.prediction_audit,
+                    horizon_quantiles=result.horizon_quantiles,
                     n_symbols=result.n_symbols,
                     n_dates=result.n_dates,
                     elapsed_ms=result.elapsed_ms,
                     error=result.error,
                     t_naive=t_naive,
                     t_newey_west=nw[0] if nw else None,
-                    nw_lag=1 if nw else None,
+                    nw_lag=nw_lag if nw else None,
                     p_value=(
                         stats_v2.normal_two_sided_p(nw[0]) if nw
-                        else stats_v2.normal_two_sided_p(t_naive) if t_naive is not None
+                        else stats_v2.normal_two_sided_p(t_naive) if t_naive is not None and config.prediction_horizon is None
                         else None
                     ),
                 ))
@@ -558,6 +573,55 @@ class FactorBacktestService:
             how="left",
         )
 
+    @staticmethod
+    def _attach_prediction_returns(
+        panel: pl.DataFrame,
+        config: FactorConfig | FactorBatchConfig,
+        *,
+        trading_dates: list[date] | None = None,
+    ) -> pl.DataFrame:
+        """T close-known features: T+1 exchange-session open to T+H close.
+
+        Missing entry/target prices remain missing. Never shift across a suspension
+        or manufacture a label at a different horizon.
+        """
+        horizons = PREDICTION_HORIZONS
+        label_columns = [f"_prediction_return_{h}d" for h in horizons]
+        prices = (panel.filter(pl.col("date").is_between(config.start, config.end))
+                  .select("symbol", "date", "open", "close")
+                  .unique(subset=["symbol", "date"], keep="last"))
+        dates = sorted(d for d in (trading_dates if trading_dates is not None
+                                  else prices["date"].unique().to_list())
+                       if config.start <= d <= config.end)
+        if len(dates) < 2:
+            return panel.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in label_columns])
+        date_dtype = prices.schema["date"]
+        axis = pl.DataFrame({"date": dates[:-1], "_entry_date": dates[1:]}).cast(
+            {"date": date_dtype, "_entry_date": date_dtype})
+        labels = prices.select("symbol", "date").join(axis, on="date", how="left").join(
+            prices.select("symbol", pl.col("date").alias("_entry_date"),
+                          pl.col("open").alias("_entry_open")),
+            on=["symbol", "_entry_date"], how="left")
+        for h, column in zip(horizons, label_columns, strict=True):
+            if len(dates) <= h:
+                labels = labels.with_columns(pl.lit(None, dtype=pl.Float64).alias(column))
+                continue
+            targets = pl.DataFrame({"date": dates[:-h], "_target_date": dates[h:]}).cast(
+                {"date": date_dtype, "_target_date": date_dtype})
+            labels = (labels.join(targets, on="date", how="left")
+                      .join(prices.select("symbol", pl.col("date").alias("_target_date"),
+                                          pl.col("close").alias("_target_close")),
+                            on=["symbol", "_target_date"], how="left")
+                      .with_columns(pl.when((pl.col("_entry_open") > 0)
+                                             & pl.col("_entry_open").is_finite()
+                                             & (pl.col("_target_close") > 0)
+                                             & pl.col("_target_close").is_finite())
+                                    .then(pl.col("_target_close") / pl.col("_entry_open") - 1)
+                                    .otherwise(None).alias(column))
+                      .drop("_target_date", "_target_close"))
+        return panel.join(labels.select("symbol", "date", *label_columns),
+                          on=["symbol", "date"], how="left")
+
     def _evaluate_panel(
         self,
         source_panel: pl.DataFrame,
@@ -579,11 +643,14 @@ class FactorBacktestService:
         if "_next_return" not in source_panel.columns:
             source_panel = self._attach_shared_next_return(source_panel, config)
 
+        if config.prediction_horizon is not None and "_prediction_return_20d" not in source_panel.columns:
+            source_panel = self._attach_prediction_returns(source_panel, config, trading_dates=market_trading_dates)
         return_columns = [
             column
             for column in (
                 "_next_return",
                 *(f"_forward_return_{horizon}d" for horizon in _DAILY_FORWARD_HORIZONS),
+                *(f"_prediction_return_{horizon}d" for horizon in PREDICTION_HORIZONS),
             )
             if column in source_panel.columns
         ]
@@ -605,7 +672,11 @@ class FactorBacktestService:
         n_dates = panel["date"].n_unique()
 
         # ── 1. IC 分析 ──
-        ic_df = self._calc_ic(panel, factor_col)
+        ic_panel = panel
+        if config.prediction_horizon is not None:
+            ic_panel = panel.with_columns(
+                pl.col(f"_prediction_return_{config.prediction_horizon}d").alias("_next_return"))
+        ic_df = self._calc_ic(ic_panel, factor_col)
         valid_ic_df = ic_df.filter(pl.col("ic").is_not_null() & pl.col("ic").is_finite())
         ic_rows = valid_ic_df.iter_rows(named=True)
         ic_series = [
@@ -618,7 +689,13 @@ class FactorBacktestService:
         ir = (ic_mean / ic_std) if (ic_mean is not None and ic_std and ic_std > 1e-8) else None
         ic_win_rate = float(np.mean(ic_values > 0)) if ic_values.size else None
         yearly_ic = self._calc_yearly_ic(valid_ic_df)
-        ic_decay = self._calc_ic_decay(panel, factor_col)
+        if config.prediction_horizon is None:
+            ic_decay = self._calc_ic_decay(panel, factor_col)
+        else:
+            decay_panel = panel.with_columns([
+                pl.col(f"_prediction_return_{h}d").alias(f"_forward_return_{h}d")
+                for h in PREDICTION_HORIZONS])
+            ic_decay = self._calc_ic_decay(decay_panel, factor_col, PREDICTION_HORIZONS)
         regime_stats = self._calc_regime_stats(
             valid_ic_df,
             price_panel,
@@ -630,6 +707,49 @@ class FactorBacktestService:
 
         # ── 2. 分层回测 ──
         panel = self._add_groups(panel, factor_col, config.n_groups)
+        horizon_quantiles = []
+        prediction_audit = {}
+        if config.prediction_horizon is not None:
+            horizon = config.prediction_horizon
+            label = f"_prediction_return_{horizon}d"
+            mature = panel.filter(pl.col(label).is_not_null())
+            available_dates = sorted(price_panel["date"].unique().to_list())
+            market_dates = sorted(d for d in (market_trading_dates or available_dates)
+                                  if config.start <= d <= config.end)
+            valid_dates = set(valid_ic_df["date"].to_list())
+            # Greedy, disjoint outcome intervals on the exchange calendar, not row count / H.
+            blocks, next_index = 0, 0
+            for index, day in enumerate(market_dates):
+                if day in valid_dates and index >= next_index:
+                    blocks += 1
+                    next_index = index + horizon
+            warnings = []
+            if blocks < 8:
+                warnings.append(f"仅 {blocks} 个不重叠观察区间：结果用于探索，尚不足以确认长期有效。")
+            actual_years = ((available_dates[-1] - available_dates[0]).days / 365.25
+                            if available_dates else 0)
+            quick_years = {20: 2, 60: 4, 250: 5}[horizon]
+            if actual_years < quick_years:
+                warnings.append(f"实际行情约 {actual_years:.1f} 年，短于该期限快速筛选建议的 {quick_years} 年。")
+            prediction_audit = {
+                "horizon": horizon, "label": "next_exchange_open_to_hth_close",
+                "n_ic_dates": valid_ic_df.height,
+                "mature_rows": mature.height,
+                "missing_or_immature_rows": panel.height - mature.height,
+                "nonoverlap_intervals": blocks,
+                "data_start": str(available_dates[0]) if available_dates else None,
+                "data_end": str(available_dates[-1]) if available_dates else None,
+                "last_mature_signal": str(max(valid_dates)) if valid_dates else None,
+                "inference_status": "descriptive_only" if blocks < 8 else "research",
+                "warnings": warnings,
+            }
+            if not mature.is_empty():
+                grouped = (mature.group_by("date", "_group").agg(pl.col(label).mean().alias("return"))
+                           .group_by("_group").agg(pl.col("return").mean().alias("mean_return"),
+                                                       pl.len().alias("n_dates")).sort("_group"))
+                horizon_quantiles = [{"group": int(r["_group"].removeprefix("Q")), "mean_return": r["mean_return"],
+                                      "n_dates": r["n_dates"]} for r in grouped.iter_rows(named=True)]
+                horizon_quantiles.sort(key=lambda item: item["group"])
         group_nav = self._calc_group_nav(panel, config)
         group_stats = self._calc_group_stats(group_nav, config.start, config.end, config.rebalance)
         turnover = self._calc_turnover(panel, config)
@@ -642,6 +762,7 @@ class FactorBacktestService:
         return FactorResult(
             run_id=run_id,
             config=self._config_to_dict(config),
+            methodology_version="factor_v3_fixed_horizon" if config.prediction_horizon else FACTOR_METHODOLOGY_VERSION,
             ic_mean=round(ic_mean, 4) if ic_mean is not None else None,
             ic_std=round(ic_std, 4) if ic_std is not None else None,
             ir=round(ir, 4) if ir is not None else None,
@@ -657,6 +778,8 @@ class FactorBacktestService:
             yearly_ic=yearly_ic,
             ic_decay=ic_decay,
             regime_stats=regime_stats,
+            prediction_audit=prediction_audit,
+            horizon_quantiles=horizon_quantiles,
             elapsed_ms=round(elapsed, 1),
             n_symbols=n_symbols,
             n_dates=n_dates,
@@ -783,31 +906,21 @@ class FactorBacktestService:
         return result
 
     @staticmethod
-    def _calc_ic_decay(panel: pl.DataFrame, factor_col: str) -> list[dict]:
+    def _calc_ic_decay(panel: pl.DataFrame, factor_col: str,
+                       horizons: tuple[int, ...] = _DAILY_FORWARD_HORIZONS) -> list[dict]:
         columns = [
             (horizon, f"_forward_return_{horizon}d")
-            for horizon in _DAILY_FORWARD_HORIZONS
+            for horizon in horizons
             if f"_forward_return_{horizon}d" in panel.columns
         ]
         if not columns:
             return []
-        decay_df = (
-            panel.group_by("date")
-            .agg([
-                pl.corr(
-                    pl.col(factor_col).rank(method="average"),
-                    pl.col(return_column).rank(method="average"),
-                ).alias(f"ic_{horizon}d")
-                for horizon, return_column in columns
-            ])
-            .sort("date")
-        )
         result: list[dict] = []
-        for horizon, _ in columns:
-            column = f"ic_{horizon}d"
-            values = decay_df.filter(
-                pl.col(column).is_not_null() & pl.col(column).is_finite()
-            )[column]
+        for horizon, return_column in columns:
+            # Rank only the same mature stock set on both sides of the correlation.
+            ic = FactorBacktestService._calc_ic(
+                panel.with_columns(pl.col(return_column).alias("_next_return")), factor_col)
+            values = ic.filter(pl.col("ic").is_not_null() & pl.col("ic").is_finite())["ic"]
             result.append({
                 "horizon": horizon,
                 "ic_mean": round(float(values.mean()), 4) if len(values) else None,
@@ -1317,6 +1430,9 @@ class FactorBacktestService:
             "stamp_tax_pct": c.stamp_tax_pct,
             "slippage_bps": c.slippage_bps,
             "asset_type": c.asset_type,
+            "prediction_horizon": c.prediction_horizon,
+            "prediction_label": "next_exchange_open_to_hth_close" if c.prediction_horizon else "legacy_rebalance_close_to_close",
+            "portfolio_label": "rebalance_close_to_close_theoretical",
         }
 
     @staticmethod
@@ -1334,4 +1450,7 @@ class FactorBacktestService:
             "stamp_tax_pct": c.stamp_tax_pct,
             "slippage_bps": c.slippage_bps,
             "asset_type": c.asset_type,
+            "prediction_horizon": c.prediction_horizon,
+            "prediction_label": "next_exchange_open_to_hth_close" if c.prediction_horizon else "legacy_rebalance_close_to_close",
+            "portfolio_label": "rebalance_close_to_close_theoretical",
         }

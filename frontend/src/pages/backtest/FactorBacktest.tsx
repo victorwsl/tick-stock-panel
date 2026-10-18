@@ -11,6 +11,8 @@ import { QK } from '@/lib/queryKeys'
 import { FactorICChart } from './charts/FactorICChart'
 import { FactorGroupNavChart } from './charts/FactorGroupNavChart'
 import { factorResultCandidate } from './researchCandidates'
+import { FactorResearchOptions, type PredictionHorizon } from './components/FactorResearchOptions'
+import { FactorResearchSummary } from './components/FactorResearchSummary'
 
 const formatDate = (date: Date) => date.toISOString().slice(0, 10)
 const monthsAgo = (months: number) => {
@@ -19,7 +21,7 @@ const monthsAgo = (months: number) => {
   return formatDate(date)
 }
 const TODAY = formatDate(new Date())
-const THREE_MONTHS_AGO = monthsAgo(3)
+const DEFAULT_START = monthsAgo(60)
 
 const INPUT_CLS = `w-full px-2.5 py-1.5 rounded-input bg-surface border border-border text-xs
   focus:outline-none focus:border-accent transition-colors duration-150 ease-smooth`
@@ -83,18 +85,19 @@ function LoadingPanel({ symbolsText }: { symbolsText: string }) {
   )
 }
 
-export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initialFactorName?: string }) {
+export function FactorBacktest({ initialFactorName = 'momentum_20d', initialConfig }: { initialFactorName?: string; initialConfig?: Record<string, any> }) {
   const queryClient = useQueryClient()
   const [factorName, setFactorName] = useState(initialFactorName)
-  const [symbols, setSymbols] = useState('')
-  const [assetType, setAssetType] = useState<'stock' | 'etf'>('stock')
-  const [start, setStart] = useState(THREE_MONTHS_AGO)
-  const [end, setEnd] = useState(TODAY)
-  const [nGroups, setNGroups] = useState(5)
-  const [weight, setWeight] = useState<'equal' | 'factor_weight'>('equal')
-  const [rebalance, setRebalance] = useState<'daily' | 'weekly' | 'monthly'>('daily')
-  const [fees, setFees] = useState('2')
-  const [slippage, setSlippage] = useState('5')
+  const [symbols, setSymbols] = useState<string>(initialConfig?.symbols?.join(',') ?? '')
+  const [assetType, setAssetType] = useState<'stock' | 'etf'>(initialConfig?.asset_type === 'etf' ? 'etf' : 'stock')
+  const [start, setStart] = useState<string>(initialConfig?.start ?? DEFAULT_START)
+  const [predictionHorizon, setPredictionHorizon] = useState<PredictionHorizon>(initialConfig ? initialConfig.prediction_horizon ?? null : 60)
+  const [end, setEnd] = useState<string>(initialConfig?.end ?? TODAY)
+  const [nGroups, setNGroups] = useState<number>(initialConfig?.n_groups ?? 5)
+  const [weight, setWeight] = useState<'equal' | 'factor_weight'>(initialConfig?.weight ?? 'equal')
+  const [rebalance, setRebalance] = useState<'daily' | 'weekly' | 'monthly'>(initialConfig?.rebalance ?? 'monthly')
+  const [fees, setFees] = useState(String((initialConfig?.fees_pct ?? .0002) * 10000))
+  const [slippage, setSlippage] = useState(String(initialConfig?.slippage_bps ?? 5))
   const [result, setResult] = useState<FactorBacktestResult | null>(null)
 
   const columns = useQuery({
@@ -126,6 +129,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
     mutationFn: () =>
       api.factorRun({
         factor_name: factorName,
+        prediction_horizon: predictionHorizon,
         asset_type: assetType,
         symbols: symbols ? symbols.split(',').map(s => s.trim()).filter(Boolean) : null,
         start: start || null,
@@ -167,24 +171,9 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
     setEnd(formatDate(new Date()))
   }
 
-  const rangeKey = end === TODAY && start === THREE_MONTHS_AGO
-    ? '3m'
-    : end === TODAY && start === monthsAgo(6)
-      ? '6m'
-      : end === TODAY && start === monthsAgo(12)
-        ? '1y'
-        : end === TODAY && start === ''
-          ? 'all'
-          : 'custom'
-  const rangeTitle = rangeKey === '3m'
-    ? '近 3 个月'
-    : rangeKey === '6m'
-      ? '近 6 个月'
-      : rangeKey === '1y'
-        ? '近 1 年'
-        : rangeKey === 'all'
-          ? '全部历史'
-          : '自定义区间'
+  const rangeKey = !start ? 'all' : [24, 36, 60, 120].find(months => end === TODAY && start === monthsAgo(months))?.toString() ?? 'custom'
+  const rangeTitle = rangeKey === 'all' ? '全部历史' : rangeKey === 'custom' ? '自选区间' : `${Number(rangeKey) / 12}年`
+
   const rangeButtonCls = (key: string) => `rounded-btn px-2 py-1 text-[11px] font-medium transition-colors ${rangeKey === key
     ? 'bg-accent/15 text-accent'
     : 'text-muted hover:bg-elevated/70 hover:text-secondary'
@@ -241,7 +230,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
             type="text"
             value={symbols}
             onChange={e => setSymbols(e.target.value)}
-            placeholder="留空则使用全市场，建议最近3个月"
+            placeholder="留空使用全市场；长期检验需成熟历史"
             className={`w-full px-2.5 py-1.5 rounded-input bg-surface border border-border text-xs font-mono
               focus:outline-none focus:border-accent transition-colors duration-150 ease-smooth`}
           />
@@ -281,13 +270,12 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
           </div>
 
           <div className="mt-2 flex rounded-input bg-base/60 p-0.5">
-            <button type="button" onClick={() => applyRange(3)} className={`${rangeButtonCls('3m')} flex-1`}>3个月</button>
-            <button type="button" onClick={() => applyRange(6)} className={`${rangeButtonCls('6m')} flex-1`}>6个月</button>
-            <button type="button" onClick={() => applyRange(12)} className={`${rangeButtonCls('1y')} flex-1`}>1年</button>
+            {[24, 36, 60, 120].map(months => <button key={months} type="button" onClick={() => applyRange(months)} className={`${rangeButtonCls(String(months))} flex-1`}>{months / 12}年</button>)}
             <button type="button" onClick={applyAllRange} className={`${rangeButtonCls('all')} flex-1`}>全部</button>
           </div>
         </div>
 
+        <FactorResearchOptions horizon={predictionHorizon} onHorizon={setPredictionHorizon} onRange={years => applyRange(years * 12)} />
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-xs font-medium text-secondary block mb-1.5">分组数</label>
@@ -354,7 +342,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
           <EmptyState
             icon={BarChart3}
             title="选择因子并开始分析"
-            hint="因子回测分析因子的预测能力 ( IC/IR ) 和分层收益差异。服务器建议优先使用最近3个月；长周期建议本机或 8GB 以上内存环境运行。"
+            hint="因子回测分析因子的预测能力 ( IC/IR ) 和分层收益差异。默认检验未来60交易日。可独立选择预测期限、研究区间和组合调仓频率。"
           />
         )}
 
@@ -375,6 +363,8 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
             className="space-y-4"
           >
+            <FactorResearchSummary config={result.config} audit={result.prediction_audit}
+              quantiles={result.horizon_quantiles} decay={result.ic_decay} />
             {/* IC/IR 指标 */}
             <div className="rounded-card border border-border bg-surface p-4">
               <div className="flex items-center justify-between mb-3">
@@ -390,7 +380,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
                     {saveCandidate.isPending ? '保存中' : '保存候选'}
                   </button>
                   <span className="text-[11px] text-muted">
-                    Rank IC · {rebalance === 'daily' ? '日度' : rebalance === 'weekly' ? '周度' : '月度'}调仓
+                    Rank IC · {result.config.prediction_horizon ? `${result.config.prediction_horizon}日预测` : '旧版随调仓期限'}
                   </span>
                   {result.elapsed_ms > 0 && (
                     <span className="flex items-center gap-1 text-[11px] text-muted">
@@ -419,7 +409,7 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d' }: { initial
                 </div>
               ) : (
                 <div className="rounded-btn border border-border bg-base/40 px-3 py-3 text-xs text-muted">
-                  标的数量过少，无法计算 IC/IR（需 ≥2 只）。可清空标的使用全市场，或补充更多标的。
+                  暂无有效IC：可能缺少成熟期限收益，或有效标的少于2只。可清空标的使用全市场，或补充更多标的。
                 </div>
               )}
             </div>

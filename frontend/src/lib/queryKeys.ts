@@ -51,10 +51,17 @@ export const QK = {
   limitLadder:          (asOf?: string) => ['limit-ladder', asOf] as const,
 
   // Backtest
+  factorBatchHistory:   ['factor-batch-history'] as const,
+  researchStrategyMetadata: ['research-strategy-metadata'] as const,
   backtestHistory:      ['backtest-history'] as const,
   backtestStatus:       ['backtest-status'] as const,
   backtestCandidates:   ['backtest-candidates'] as const,
   factorColumns:        ['backtest-factor-columns'] as const,
+  factorResearchStudies: ['personal-factor-studies'] as const,
+  factorResearchSummary: (id: string, horizon: number, k: number, cohort: string) =>
+    ['personal-factor-summary', id, horizon, k, cohort] as const,
+  factorResearchDetail: (id: string, factor: string, period: string, horizon: number, k: number, cohort: string) =>
+    ['personal-factor-detail', id, factor, period, horizon, k, cohort] as const,
   factorLibrary:        (assetType: string) => ['factors-library', assetType] as const,
   miningRuns:           ['backtest-mining-runs'] as const,
   miningAvailability:   (assetType: string, profile: string, start: string, end: string) =>

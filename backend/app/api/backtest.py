@@ -16,12 +16,19 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.market_time import cn_today
-from app.services.backtest_history import list_results, load_result, save_result
 from app.services.backtest import (
     BacktestConfig,
     BacktestService,
     VectorbtUnavailable,
 )
+from app.services.backtest_history import (
+    delete_result,
+    list_results,
+    load_result,
+    patch_result_metadata,
+    save_result,
+)
+from app.services.research_metadata import HistoryMetadataPatch
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +154,7 @@ class FactorBacktestRequest(BaseModel):
     fees_pct: float = 0.0002
     slippage_bps: float = 5.0
     asset_type: str = "stock"
+    prediction_horizon: Literal[20, 60, 250] | None = None
 
 
 @router.post("/factor/run")
@@ -182,6 +190,7 @@ def factor_run(req: FactorBacktestRequest, request: Request):
         fees_pct=req.fees_pct,
         slippage_bps=req.slippage_bps,
         asset_type=req.asset_type,
+        prediction_horizon=req.prediction_horizon,
     )
     result = svc.run(cfg)
     return asdict(result)
@@ -198,6 +207,7 @@ class FactorBatchRequest(BaseModel):
     fees_pct: float = 0.0002
     slippage_bps: float = 5.0
     asset_type: str = "stock"
+    prediction_horizon: Literal[20, 60, 250] | None = None
 
 
 @router.post("/factor/batch")
@@ -237,6 +247,7 @@ def factor_batch(req: FactorBatchRequest, request: Request):
         fees_pct=req.fees_pct,
         slippage_bps=req.slippage_bps,
         asset_type=req.asset_type,
+        prediction_horizon=req.prediction_horizon,
     ))
     return asdict(result)
 
@@ -433,6 +444,26 @@ def strategy_history_result(history_id: str):
         raise HTTPException(404, detail="历史回测不存在")
     except (OSError, ValueError):
         raise HTTPException(500, detail="历史回测读取失败，请检查记录文件")
+
+
+@router.patch("/strategy/history/{history_id}")
+def strategy_history_patch(history_id: str, patch: HistoryMetadataPatch):
+    try:
+        return patch_result_metadata(settings.data_dir, history_id, patch)
+    except FileNotFoundError:
+        raise HTTPException(404, detail="历史回测不存在") from None
+    except (OSError, ValueError):
+        raise HTTPException(500, detail="历史标注保存失败，请检查记录文件和目录权限") from None
+
+
+@router.delete("/strategy/history/{history_id}")
+def strategy_history_delete(history_id: str):
+    try:
+        return delete_result(settings.data_dir, history_id)
+    except FileNotFoundError:
+        raise HTTPException(404, detail="历史回测不存在") from None
+    except OSError:
+        raise HTTPException(500, detail="历史回测删除失败，请检查目录权限") from None
 
 
 # ── SSE 流式回测 (实时进度 + 可取消 + 支持重连) ───────────────────

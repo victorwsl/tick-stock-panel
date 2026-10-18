@@ -5,13 +5,15 @@ import { PageHeader } from '@/components/PageHeader'
 import { FactorDiscovery } from './backtest/FactorDiscovery'
 import { FactorComposite } from './factors/FactorComposite'
 import { FactorEditor } from './factors/FactorEditor'
+import { FactorValidation } from './factors/FactorValidation'
 import { FactorLibrary } from './factors/FactorLibrary'
 import { MiningWorkbench } from './backtest/MiningWorkbench'
 import { ResearchCandidatesDialog } from './backtest/ResearchCandidatesDialog'
 
-type Tab = 'inspect' | 'library' | 'editor' | 'composite' | 'mining'
+type Tab = 'validation' | 'inspect' | 'library' | 'editor' | 'composite' | 'mining'
 
 const TABS: Record<Tab, { title: string; icon: typeof Sigma }> = {
+  validation: { title: '验证表', icon: Sigma },
   inspect: { title: '检验', icon: Sigma },
   library: { title: '因子库', icon: LibrarySquare },
   editor: { title: '编辑器', icon: PenLine },
@@ -25,7 +27,7 @@ export function Factors() {
   const navigate = useNavigate()
 
   const requestedTab = searchParams.get('tab')
-  const activeTab: Tab = requestedTab === 'library' || requestedTab === 'editor' || requestedTab === 'composite' || requestedTab === 'mining'
+  const activeTab: Tab = requestedTab === 'validation' || requestedTab === 'library' || requestedTab === 'editor' || requestedTab === 'composite' || requestedTab === 'mining'
     ? requestedTab
     : 'inspect'
   const focusFactor = activeTab === 'inspect' ? searchParams.get('focus') ?? '' : ''
@@ -86,6 +88,7 @@ export function Factors() {
       />
 
       <main className="min-h-0 flex-1 px-3 pb-3 pt-3 lg:px-4 lg:pb-4 xl:overflow-hidden">
+        {activeTab === 'validation' && <FactorValidation />}
         {activeTab === 'inspect' && <FactorDiscovery focusFactor={focusFactor} />}
         {activeTab === 'editor' && <FactorEditor key={searchParams.get('edit') ?? ''} editId={searchParams.get('edit') ?? ''} />}
         {activeTab === 'composite' && <FactorComposite />}

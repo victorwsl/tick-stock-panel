@@ -122,3 +122,193 @@ def test_real_worker_result_can_be_saved_and_reloaded(tmp_path):
     assert loaded["trades"] == result["trades"]
     assert loaded["equity_curve"] == result["equity_curve"]
     assert loaded["drawdown_curve"] == result["drawdown_curve"]
+
+
+def test_summary_contains_stats_and_legacy_list_never_reads_result(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+
+    result = {**sample(), "stats": {"total_return": .23, "max_drawdown": -.11, "win_rate": .5}}
+    saved = save_result(tmp_path, result, {"strategy_id": "trend_v1"})
+    folder = tmp_path / "backtest_history" / saved["history_id"]
+    item = list_results(tmp_path)["items"][0]
+    assert item["strategy_id"] == "trend_v1"
+    assert item["stats"] == result["stats"]
+    legacy = json.loads((folder / "summary.json").read_text())
+    legacy.pop("strategy_id")
+    legacy.pop("stats")
+    (folder / "summary.json").write_text(json.dumps(legacy))
+    original_read = Path.read_text
+
+    def read(path, *args, **kwargs):
+        assert path.name != "result.json", "list must not read large immutable results"
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    old = list_results(tmp_path)["items"][0]
+    assert old["strategy_id"] is None
+    assert old["stats"] == {"total_return": None, "max_drawdown": None, "win_rate": None}
+
+
+def test_metadata_edits_are_independent_and_delete_only_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(backtest.settings, "data_dir", tmp_path)
+    first = save_result(tmp_path, sample(), {"strategy_id": "trend"})
+    second = save_result(tmp_path, sample(), {})
+    folder = tmp_path / "backtest_history" / first["history_id"]
+    before = {name: (folder / name).read_bytes() for name in ("result.json", "summary.json")}
+    app = FastAPI()
+    app.include_router(backtest.router)
+    url = "/api/backtest/strategy/history/" + first["history_id"]
+    with TestClient(app) as client:
+        response = client.patch(url, json={"favorite": True, "label": "基线", "note": "保留对照"})
+        assert response.status_code == 200
+        assert response.json()["strategy_id"] == "trend"
+        assert response.json()["favorite"] is True
+        response = client.patch(url, json={"label": "新标签"})
+        assert response.json()["note"] == "保留对照"
+        assert list_results(tmp_path)["items"][1]["label"] == "新标签"
+        assert before == {name: (folder / name).read_bytes() for name in before}
+        assert client.delete(url).json() == {"id": first["history_id"]}
+        assert client.get(url).status_code == 404
+        assert client.delete(url).status_code == 404
+        assert load_result(tmp_path, second["history_id"]) == second
+
+
+@pytest.mark.parametrize("patch", [{"unknown": True}, {"label": "x" * 121},
+                                    {"note": "x" * 4001}, {"favorite": "true"}, {"label": None}])
+def test_metadata_patch_validation(tmp_path, monkeypatch, patch):
+    monkeypatch.setattr(backtest.settings, "data_dir", tmp_path)
+    saved = save_result(tmp_path, sample(), {})
+    app = FastAPI()
+    app.include_router(backtest.router)
+    with TestClient(app) as client:
+        assert client.patch("/api/backtest/strategy/history/" + saved["history_id"], json=patch).status_code == 422
+
+
+def test_corrupt_metadata_visible_and_not_overwritten(tmp_path, monkeypatch):
+    monkeypatch.setattr(backtest.settings, "data_dir", tmp_path)
+    saved = save_result(tmp_path, sample(), {})
+    folder = tmp_path / "backtest_history" / saved["history_id"]
+    meta = folder / "metadata.json"
+    meta.write_text("{")
+    rows = list_results(tmp_path)
+    assert rows["unavailable"] == 1
+    assert rows["items"][0]["metadata_error"]
+    assert load_result(tmp_path, saved["history_id"]) == saved
+    app = FastAPI()
+    app.include_router(backtest.router)
+    with TestClient(app) as client:
+        assert client.patch("/api/backtest/strategy/history/" + saved["history_id"], json={"note": "a"}).status_code == 500
+    assert meta.read_text() == "{"
+    (folder / "summary.json").write_text('{"id":"bad"}')
+    assert list_results(tmp_path) == {"items": [], "unavailable": 1}
+
+
+def test_symlink_and_traversal_boundaries(tmp_path):
+    from app.services.backtest_history import delete_result, patch_result_metadata
+    from app.services.research_metadata import HistoryMetadataPatch
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("preserve")
+    root = tmp_path / "backtest_history"
+    root.mkdir()
+    linked_id = "a" * 32
+    (root / linked_id).symlink_to(outside, target_is_directory=True)
+    for history_id in (linked_id, "..", "../outside", "A" * 32, "a" * 31):
+        with pytest.raises(FileNotFoundError):
+            load_result(tmp_path, history_id)
+        with pytest.raises(FileNotFoundError):
+            delete_result(tmp_path, history_id)
+        with pytest.raises(FileNotFoundError):
+            patch_result_metadata(tmp_path, history_id, HistoryMetadataPatch(note="x"))
+    assert list_results(tmp_path)["unavailable"] == 1
+    assert sentinel.read_text() == "preserve"
+    saved = save_result(tmp_path, sample(), {})
+    folder = root / saved["history_id"]
+    # Deleting a real run does not follow child links.
+    (folder / "outside").symlink_to(outside, target_is_directory=True)
+    delete_result(tmp_path, saved["history_id"])
+    assert sentinel.read_text() == "preserve"
+
+
+def test_summary_and_result_symlink_rejected(tmp_path):
+    saved = save_result(tmp_path, sample(), {})
+    folder = tmp_path / "backtest_history" / saved["history_id"]
+    for name in ("summary.json", "result.json"):
+        path = folder / name
+        outside = tmp_path / name
+        path.rename(outside)
+        path.symlink_to(outside)
+    assert list_results(tmp_path) == {"items": [], "unavailable": 1}
+    with pytest.raises(FileNotFoundError):
+        load_result(tmp_path, saved["history_id"])
+
+
+def test_concurrent_metadata_patches_keep_both_fields(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.services.backtest_history import patch_result_metadata
+    from app.services.research_metadata import HistoryMetadataPatch
+
+    saved = save_result(tmp_path, sample(), {})
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(patch_result_metadata, tmp_path, saved["history_id"],
+                               HistoryMetadataPatch(**patch))
+                   for patch in [{"label": "baseline"}, {"note": "keep"}, {"favorite": True}] * 8]
+        for future in futures:
+            future.result()
+    row = list_results(tmp_path)["items"][0]
+    assert (row["label"], row["note"], row["favorite"]) == ("baseline", "keep", True)
+
+
+def test_failed_atomic_metadata_write_preserves_old_annotation(tmp_path, monkeypatch):
+    from app.services import research_metadata
+    from app.services.backtest_history import patch_result_metadata
+    from app.services.research_metadata import HistoryMetadataPatch
+
+    saved = save_result(tmp_path, sample(), {})
+    patch_result_metadata(tmp_path, saved["history_id"], HistoryMetadataPatch(note="old"))
+
+    def fail(*args):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(research_metadata.os, "replace", fail)
+    with pytest.raises(OSError):
+        patch_result_metadata(tmp_path, saved["history_id"], HistoryMetadataPatch(note="new"))
+    assert list_results(tmp_path)["items"][0]["note"] == "old"
+    assert not list((tmp_path / "backtest_history" / saved["history_id"]).glob(".metadata-*"))
+
+
+def test_history_root_symlink_never_read_written_or_deleted(tmp_path):
+    from app.services.backtest_history import delete_result
+
+    outside_data = tmp_path / "outside"
+    saved = save_result(outside_data, sample(), {})
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "backtest_history").symlink_to(outside_data / "backtest_history", target_is_directory=True)
+    assert list_results(data_dir) == {"items": [], "unavailable": 1}
+    assert save_result(data_dir, sample(), {})["history_error"]
+    with pytest.raises(FileNotFoundError):
+        delete_result(data_dir, saved["history_id"])
+    assert load_result(outside_data, saved["history_id"]) == saved
+
+
+def test_failed_delete_returns_visible_error_and_preserves_record(tmp_path, monkeypatch):
+    from app.services import backtest_history
+
+    saved = save_result(tmp_path, sample(), {})
+    monkeypatch.setattr(backtest.settings, "data_dir", tmp_path)
+
+    def fail(*args):
+        raise PermissionError("not writable")
+
+    monkeypatch.setattr(backtest_history.shutil, "rmtree", fail)
+    app = FastAPI()
+    app.include_router(backtest.router)
+    with TestClient(app) as client:
+        response = client.delete("/api/backtest/strategy/history/" + saved["history_id"])
+        assert response.status_code == 500
+    assert load_result(tmp_path, saved["history_id"]) == saved

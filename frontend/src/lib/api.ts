@@ -828,6 +828,31 @@ export interface CompositeChildInfo {
   weight: number
 }
 
+export interface ResearchStrategyMetadata {
+  category?: 'smallcap' | 'dividend' | 'trend' | 'other'
+  favorite?: boolean
+  note?: string
+  parent_id?: string | null
+  label?: string
+}
+
+export interface BacktestHistoryItem {
+  id: string
+  saved_at: string
+  name: string
+  start: string
+  end: string
+  trade_count: number
+  asset_type: string
+  mode: string
+  strategy_id?: string | null
+  label?: string
+  note?: string
+  favorite?: boolean
+  metadata_error?: string
+  stats?: Record<string, number | null>
+}
+
 export interface StrategyDetail {
   id: string
   name: string
@@ -1485,7 +1510,23 @@ export interface BacktestCandidate {
   created_at: string
 }
 
+export interface FactorPredictionAudit {
+  horizon: number
+  n_ic_dates: number
+  mature_rows: number
+  missing_or_immature_rows: number
+  nonoverlap_intervals: number
+  data_start: string | null
+  data_end: string | null
+  last_mature_signal: string | null
+  inference_status: 'descriptive_only' | 'research'
+  warnings: string[]
+}
+
 export interface FactorBacktestResult {
+  prediction_audit?: FactorPredictionAudit
+  horizon_quantiles?: { group: number; mean_return: number; n_dates: number }[]
+  ic_decay?: { horizon: number; ic_mean: number | null; n_dates: number }[]
   run_id: string
   config: Record<string, any>
   ic_mean: number | null
@@ -1504,6 +1545,8 @@ export interface FactorBacktestResult {
 }
 
 export interface FactorBatchItem {
+  prediction_audit?: FactorPredictionAudit
+  horizon_quantiles?: { group: number; mean_return: number; n_dates: number }[]
   factor_name: string
   label: string
   group: string
@@ -1525,6 +1568,8 @@ export interface FactorBatchItem {
 }
 
 export interface FactorBatchResult {
+  history_id?: string
+  history_error?: string
   run_id: string
   config: Record<string, any>
   results: FactorBatchItem[]
@@ -3145,6 +3190,18 @@ export const api = {
   factorColumns: () =>
     request<{ columns: FactorColumn[] }>('/api/backtest/factor/columns'),
 
+  factorResearchStudies: () =>
+    request<{ studies: FactorResearchStudy[] }>('/api/custom/factor-research'),
+
+  factorResearchSummary: (id: string, horizon: number, k: number, cohort: string) =>
+    request<FactorResearchSummary>(`/api/custom/factor-research/${encodeURIComponent(id)}?horizon=${horizon}&k=${k}&cohort=${encodeURIComponent(cohort)}`),
+
+  factorResearchDetail: (id: string, factor: string, period: string, horizon: number, k: number, cohort: string) =>
+    request<FactorResearchDetail>(`/api/custom/factor-research/${encodeURIComponent(id)}/detail?factor=${encodeURIComponent(factor)}&period=${encodeURIComponent(period)}&horizon=${horizon}&k=${k}&cohort=${encodeURIComponent(cohort)}`),
+
+  factorResearchVerify: (id: string) =>
+    request<FactorResearchVerification>(`/api/custom/factor-research/${encodeURIComponent(id)}/verify`, { method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS }),
+
   factorLibrary: (assetType?: 'stock' | 'etf') =>
     request<{ factors: FactorLibraryItem[] }>(
       `/api/factors${assetType ? `?asset_type=${assetType}` : ''}`,
@@ -3219,6 +3276,7 @@ export const api = {
     ),
 
   factorRun: (payload: {
+    prediction_horizon?: 20 | 60 | 250 | null
     factor_name: string
     symbols?: string[] | null
     start?: string | null
@@ -3237,6 +3295,7 @@ export const api = {
     }),
 
   factorBatch: (payload: {
+    prediction_horizon?: 20 | 60 | 250 | null
     factor_names: string[]
     symbols?: string[] | null
     start?: string | null
@@ -3248,11 +3307,14 @@ export const api = {
     slippage_bps?: number
     asset_type?: 'stock' | 'etf' | 'index'
   }) =>
-    request<FactorBatchResult>('/api/backtest/factor/batch', {
+    request<FactorBatchResult>('/api/custom/factor-history/run', {
       method: 'POST',
       timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
       body: JSON.stringify(payload),
     }),
+
+  factorBatchHistory: () => request<{ items: { id: string; saved_at: string; start: string; end: string; asset_type: string }[]; unavailable: number }>('/api/custom/factor-history'),
+  factorBatchHistoryResult: (id: string) => request<FactorBatchResult>(`/api/custom/factor-history/${encodeURIComponent(id)}`),
 
   miningRuns: () =>
     request<{ items: MiningRun[] }>('/api/backtest/mining/runs'),
@@ -3341,8 +3403,15 @@ export const api = {
       method: 'DELETE',
     }),
 
-  strategyBacktestHistory: () => request<{ items: { id: string; saved_at: string; name: string; start: string; end: string; trade_count: number; asset_type: string; mode: string }[]; unavailable: number }>('/api/backtest/strategy/history'),
+  researchStrategyMetadata: () => request<{ items: Record<string, ResearchStrategyMetadata> }>('/api/research/strategies'),
+  updateResearchStrategyMetadata: (id: string, patch: Partial<ResearchStrategyMetadata>) =>
+    request<ResearchStrategyMetadata>(`/api/research/strategies/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  strategyBacktestHistory: () => request<{ items: BacktestHistoryItem[]; unavailable: number }>('/api/backtest/strategy/history'),
   strategyBacktestHistoryResult: (id: string) => request<StrategyBacktestResult>(`/api/backtest/strategy/history/${encodeURIComponent(id)}`),
+  updateStrategyBacktestHistory: (id: string, patch: { label?: string; note?: string; favorite?: boolean }) =>
+    request<BacktestHistoryItem>(`/api/backtest/strategy/history/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteStrategyBacktestHistory: (id: string) =>
+    request<{ id: string }>(`/api/backtest/strategy/history/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   strategyBacktestRun: (payload: {
     strategy_id: string
@@ -4585,4 +4654,30 @@ export interface AnalysisMenu {
   created_at?: string | null
   updated_at?: string | null
   builtin?: boolean
+}
+
+// 个人冻结实验：独立于默认收盘到收盘检验，禁止混用标签口径。
+export interface FactorResearchVerification {
+  status: string; at: string; ic_comparisons: number; max_ic_delta: number
+  ranking_comparisons: number; max_uplift_delta: number; scope: string
+}
+export interface FactorResearchStudy {
+  id: string; name: string; data_cutoff: string; horizons: number[]; periods: string[]
+  verification: FactorResearchVerification | null
+}
+export interface FactorResearchRow {
+  id: string; name: string; formula: string; kind: string; variant_id: string; period: string
+  rank_ic: number | null; ic_dates: number | null; uplift: number | null; paired_dates: number
+  nonoverlap_intervals: number; p_holm: number | null; inference: string
+}
+export interface FactorResearchSummary {
+  study: FactorResearchStudy & { baseline: string; label_contract: string; fusion: string; limitations: string[]; factors: { id: string; name: string }[] }
+  rows: FactorResearchRow[]
+  maturity: { period: string; horizon: number; signal_dates: number; mature_dates: number; valid_rows: number; immature_rows: number }[]
+  label_audit: { horizon: number; status: string; rows: number }[]
+}
+export interface FactorResearchDetail {
+  ic: { trade_date: string; rank_ic: number | null }[]
+  curves: { trade_date: string; variant_id: string; nav: number; drawdown: number }[]
+  curve_note: string
 }
