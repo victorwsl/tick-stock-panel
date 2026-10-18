@@ -9,7 +9,7 @@ import { fetchRunningTask, reportTaskFinished, reportTaskRunning } from './taskR
  * - 实时进度: EventSource 监听后端 SSE, 推送 day/total/equity
  * - 可取消: POST /strategy/cancel/{job_key}, 后端 cancel_event
  * - 切页/刷新保持: 后端按参数 hash 缓存任务, 重连不重启
- *   - 切页: 模块级 store 保持, EventSource 随组件卸载断开, 回来后重连
+ *   - 切页: 模块级 store 保持, EventSource 保持连接, 后续队列继续执行
  *   - 刷新: localStorage 存 job 参数, 刷新后重新连接到同一任务
  */
 
@@ -37,6 +37,92 @@ let current: BacktestTask | null = null
 const listeners = new Set<() => void>()
 let taskSeq = 0
 let eventSource: EventSource | null = null
+let connectionSeq = 0
+
+export interface BacktestBatchItem {
+  name: string
+  strategy_id: string
+  status: 'queued' | 'running' | 'success' | 'error' | 'cancelled'
+  error?: string
+  history_id?: string
+  history_error?: string
+}
+
+export interface BacktestBatch {
+  running: boolean
+  items: BacktestBatchItem[]
+}
+
+let batch: BacktestBatch | null = null
+let batchParams: BacktestRunParams[] = []
+let batchTaskId: number | null = null
+const batchListeners = new Set<() => void>()
+
+export function getBacktestBatch(): BacktestBatch | null { return batch }
+export function subscribeBacktestBatch(fn: () => void) {
+  batchListeners.add(fn)
+  return () => { batchListeners.delete(fn) }
+}
+function emitBatch() { batchListeners.forEach(fn => fn()) }
+
+export function useBacktestBatch(): BacktestBatch | null {
+  return useSyncExternalStore(subscribeBacktestBatch, getBacktestBatch, getServerSnapshot)
+}
+
+export function startBacktestBatch(items: { name: string; params: BacktestRunParams }[]): void {
+  if (!items.length) throw new Error('请至少选择一个策略')
+  if (batch?.running) throw new Error('批量回测正在运行，请先停止当前队列')
+  if (current?.isPending) throw new Error('已有回测正在运行，请等待完成或先停止')
+  if (localStorage.getItem(RECONNECT_KEY)) throw new Error('上一项回测状态尚未确认，请先重连或停止当前任务')
+  batchParams = items.map(item => structuredClone(item.params))
+  batch = { running: true, items: items.map(item => ({ name: item.name, strategy_id: item.params.strategy_id, status: 'queued' })) }
+  runNextBatchItem()
+}
+
+function runNextBatchItem() {
+  if (!batch?.running) return
+  const index = batch.items.findIndex(item => item.status === 'queued')
+  if (index < 0) {
+    batch = { ...batch, running: false }
+    batchTaskId = null
+    emitBatch()
+    return
+  }
+  batch = { ...batch, items: batch.items.map((item, i) => i === index ? { ...item, status: 'running' } : item) }
+  // beginBacktest synchronously publishes its pending state, so associate its id first.
+  batchTaskId = taskSeq + 1
+  beginBacktest(batchParams[index])
+  emitBatch()
+}
+
+/** Close the old stream and registry before publishing a terminal state: listeners may start a new task. */
+function completeTask(id: number, patch: Partial<BacktestTask>, outcome: 'success' | 'error' | 'cancelled' | 'unknown') {
+  if (current?.id !== id || !current.isPending) return
+  eventSource?.close()
+  eventSource = null
+  connectionSeq += 1
+  if (outcome !== 'unknown') finishTaskRegistry()
+  current = { ...current, ...patch, isPending: false, reconnecting: false }
+  const activeBatch = batchTaskId === id && batch
+  if (activeBatch) {
+    const result = current.result
+    const halt = outcome === 'unknown' || outcome === 'cancelled' || !activeBatch.running
+    batch = {
+      ...activeBatch,
+      running: !halt,
+      items: activeBatch.items.map(item => item.status === 'running'
+        ? { ...item, status: outcome === 'success' ? 'success' : outcome === 'cancelled' ? 'cancelled' : 'error', error: current!.error ?? undefined, history_id: result?.history_id, history_error: result?.history_error }
+        : halt && item.status === 'queued' ? { ...item, status: 'cancelled', error: '队列已停止，未运行' } : item),
+    }
+    batchTaskId = null
+  }
+  emit()
+  if (activeBatch) {
+    emitBatch()
+    if (current?.id === id) runNextBatchItem()
+  }
+}
+
 
 const RECONNECT_KEY = 'backtest_reconnect'
 
@@ -80,6 +166,8 @@ function buildQuery(params: Record<string, string | number | boolean | undefined
 /** 连接 SSE (新建或重连都用这个) */
 async function connectSSE(url: string): Promise<void> {
   const id = current?.id ?? ++taskSeq
+  const connection = ++connectionSeq
+  const isActive = () => current?.id === id && current.isPending && connectionSeq === connection
 
   // 关闭旧连接
   if (eventSource) {
@@ -97,16 +185,13 @@ async function connectSSE(url: string): Promise<void> {
         message = (await probe.json())?.detail ?? message
       } catch { /* ignore */ }
       await probe.body?.cancel().catch(() => {})
-      if (current?.id === id) {
-        current = { ...current, isPending: false, error: message, reconnecting: false }
-        emit()
-        finishTaskRegistry()
-      }
+      if (isActive()) completeTask(id, { error: message }, probe.status >= 500 ? 'unknown' : 'error')
       return
     }
     await probe.body?.cancel().catch(() => {})
   } catch { /* 网络层异常: 交给下方 EventSource 的重连逻辑 */ }
 
+  if (!isActive()) return
   const es = new EventSource(url)
   eventSource = es
 
@@ -114,7 +199,7 @@ async function connectSSE(url: string): Promise<void> {
   let reconnectAttempts = 0
 
   const clearReconnecting = () => {
-    if (current?.id === id && current.reconnecting) {
+    if (isActive() && current?.reconnecting) {
       current = { ...current, reconnecting: false }
       emit()
     }
@@ -126,7 +211,7 @@ async function connectSSE(url: string): Promise<void> {
   }
 
   es.addEventListener('progress', (e: MessageEvent) => {
-    if (current?.id !== id) return
+    if (!isActive() || !current) return
     // 收到数据说明连接恢复正常
     reconnectAttempts = 0
     try {
@@ -137,61 +222,36 @@ async function connectSSE(url: string): Promise<void> {
   })
 
   es.addEventListener('done', (e: MessageEvent) => {
-    if (current?.id !== id) return
+    if (!isActive()) return
     try {
-      const result = JSON.parse(e.data) as StrategyBacktestResult
-      current = { ...current, isPending: false, result, error: null, reconnecting: false }
-      emit()
+      const result = JSON.parse(e.data) as StrategyBacktestResult & { error?: string }
+      const outcome = result.error ? (/取消|cancel/i.test(result.error) ? 'cancelled' : 'error') : 'success'
+      completeTask(id, { result, error: result.error || null }, outcome)
     } catch {
-      current = { ...current, isPending: false, error: '结果解析失败', reconnecting: false }
-      emit()
+      completeTask(id, { error: '结果解析失败，任务状态未知，请先重连确认' }, 'unknown')
     }
-    es.close()
-    eventSource = null
-    finishTaskRegistry()
   })
 
   es.addEventListener('error', (e: MessageEvent) => {
-    if (current?.id !== id) return
-    // SSE error 事件: 有 data 说明是后端主动推送的错误/取消; 无 data 说明是连接断开
+    if (!isActive() || !current) return
     if (e.data) {
-      try {
-        const msg = JSON.parse(e.data)?.message ?? '回测出错'
-        current = { ...current, isPending: false, error: msg, reconnecting: false }
-        emit()
-      } catch {
-        current = { ...current, isPending: false, error: '回测出错', reconnecting: false }
-        emit()
-      }
-      es.close()
-      eventSource = null
-      finishTaskRegistry()
+      let message = '回测出错'
+      try { message = JSON.parse(e.data)?.message ?? message } catch { /* keep fallback */ }
+      completeTask(id, { error: message }, /取消|cancel/i.test(message) ? 'cancelled' : 'error')
       return
     }
-    // 无 data: 连接异常断开。EventSource 会自动重连, 但需给出可见状态并有界放弃,
-    // 避免进度条永久冻结、isPending 永远 true。
     reconnectAttempts += 1
     if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-      // 放弃: 停止自动重连, 进入可重试的错误态 (用户可重新发起回测)
-      es.close()
-      eventSource = null
-      current = {
-        ...current,
-        isPending: false,
-        reconnecting: false,
-        error: '连接中断，请重试',
-      }
-      emit()
+      completeTask(id, { error: '连接中断，任务状态未知，请先重连确认' }, 'unknown')
       return
     }
-    // 仍在重试窗口内: 标记 reconnecting, 让 UI 显示"连接中断，重试中"
     current = { ...current, reconnecting: true }
     emit()
   })
 }
 
 /** 启动一次 SSE 回测任务 */
-export function startBacktest(params: {
+export interface BacktestRunParams {
   strategy_id: string
   symbols?: string[] | null
   start?: string | null
@@ -213,8 +273,16 @@ export function startBacktest(params: {
   holding_days?: number
   asset_type?: 'stock' | 'etf'
   minute_fill?: boolean
-  regime_filter?: { states?: string[]; min_score?: number } | null
-}): void {
+  regime_filter?: { states?: string[]; min_score?: number; amv?: string } | null
+}
+
+export function startBacktest(params: BacktestRunParams): void {
+  if (batch?.running || current?.isPending) return
+  if (localStorage.getItem(RECONNECT_KEY)) throw new Error('上一项回测状态尚未确认，请先重连或停止当前任务')
+  beginBacktest(params)
+}
+
+function beginBacktest(params: BacktestRunParams): void {
   // 取消之前的任务状态
   if (eventSource) {
     eventSource.close()
@@ -223,7 +291,6 @@ export function startBacktest(params: {
 
   const id = ++taskSeq
   current = { id, isPending: true, result: null, progress: null, error: null, reconnecting: false }
-  emit()
 
   const qs = buildQuery({
     strategy_id: params.strategy_id,
@@ -253,42 +320,60 @@ export function startBacktest(params: {
   // 存 reconnect 信息 (刷新后用) + 上报注册表 (其他设备可接回)
   localStorage.setItem(RECONNECT_KEY, qs)
   reportTaskRunning(TASK_KIND, { qs }, params.strategy_id)
+  emit()
+  if (current?.id !== id || !current.isPending) return
 
   connectSSE(`/api/backtest/strategy/stream?${qs}`)
 }
 
 /** 停止当前回测任务 (调后端 cancel, 后端 cancel_event → 停止计算) */
 export async function stopBacktest(): Promise<void> {
-  // 从 reconnect key 提取 job_key (后端按参数 hash 算 job_key)
+  if (batch?.running) {
+    await stopBacktestBatch()
+    return
+  }
+  await cancelCurrentTask()
+}
+
+export async function stopBacktestBatch(): Promise<void> {
+  if (!batch?.running) return
+  batch = { ...batch, running: false, items: batch.items.map(item => item.status === 'queued' ? { ...item, status: 'cancelled', error: '队列已停止，未运行' } : item) }
+  emitBatch()
+  await cancelCurrentTask()
+}
+
+async function cancelCurrentTask(): Promise<void> {
+  const id = current?.id
   const qs = localStorage.getItem(RECONNECT_KEY)
+  // Invalidate callbacks immediately, including a still-pending preflight fetch.
+  connectionSeq += 1
+  eventSource?.close()
+  eventSource = null
   if (qs) {
-    // 解析出参数, 用 fetch 调 cancel
     try {
-      // job_key 是后端算的 md5, 前端不知道。用 reconnect URL 里的参数重新请求 stream,
-      // 后端会找到同一个 job 并返回它的 job_key? 不行。
-      // 替代: 前端直接关闭 SSE 连接 + 调一个带参数的 cancel 接口。
-      // 简化: 关闭连接即可, 后端检测断开后 (不取消)。需要 cancel 用 POST。
-      // 这里用 cancel 接口: POST /strategy/cancel, body 带 qs 的参数。
-      await fetch('/api/backtest/strategy/cancel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ qs }),
-      }).catch(() => {})
-    } catch { /* ignore */ }
+      const response = await fetch('/api/backtest/strategy/cancel', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ qs }),
+      })
+      if (!response.ok) throw new Error('cancel failed')
+    } catch {
+      if (id !== undefined) completeTask(id, { error: '取消请求未确认，任务状态未知，请先重连确认' }, 'unknown')
+      return
+    }
   }
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
+  if (id !== undefined && current?.id === id && current.isPending) {
+    completeTask(id, { error: '已取消' }, 'cancelled')
+  } else if (current?.id === id && localStorage.getItem(RECONNECT_KEY) === qs) {
+    finishTaskRegistry()
+    if (current) {
+      current = { ...current, error: '已取消', reconnecting: false }
+      emit()
+    }
   }
-  if (current?.isPending) {
-    current = { ...current, isPending: false, error: '已取消', reconnecting: false }
-    emit()
-  }
-  finishTaskRegistry()
 }
 
 /** 清除任务状态 (隐藏提示) */
 export function clearBacktest(): void {
+  if (current?.isPending || batch?.running) return
   current = null
   emit()
 }
@@ -297,6 +382,7 @@ export function clearBacktest(): void {
 async function adoptFromServer() {
   if (current && !current.error && !current.result) return // 本机已有活动任务
   const task = await fetchRunningTask(TASK_KIND)
+  if (current?.isPending || batch?.running) return
   const qs = typeof task?.payload?.qs === 'string' ? task.payload.qs : ''
   if (!qs || localStorage.getItem(RECONNECT_KEY)) return
   localStorage.setItem(RECONNECT_KEY, qs)
@@ -306,6 +392,7 @@ async function adoptFromServer() {
 /** 恢复: 从 localStorage 读取 reconnect 信息, 重新连接 (刷新后调用);
  *  本地无键时异步尝试从服务端注册表接回 (换设备场景)。 */
 export function tryReconnect(): boolean {
+  if (current?.isPending || batch?.running) return false
   const qs = localStorage.getItem(RECONNECT_KEY)
   if (!qs) {
     void adoptFromServer()

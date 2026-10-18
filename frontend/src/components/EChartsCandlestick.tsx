@@ -476,6 +476,7 @@ function buildMarkerPoints(
   compact: boolean, top: number, bottom: number,
 ): any[] {
   const markPointData: any[] = []
+  const candleAnchors: any[] = []
   if (markers && markers.length > 0) {
     for (const m of markers) {
       const idx = dateIndexMap.get(m.date)
@@ -490,15 +491,15 @@ function buildMarkerPoints(
         const escape = (value: string) => value.replace(/[&<>"']/g, c => ({
           '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
         })[c]!)
-        markPointData.push({
+        const point = {
           name: m.date, coord: [m.date, isBuy ? d.low : d.high],
           // 日期仍由x轴定位；y固定在预留事件区，缩放不遮住K线。
           y: isBuy ? bottom + (signal ? 54 : 33) : top - (signal ? 36 : 15),
           symbol: signal ? 'diamond' : 'circle', symbolSize: signal ? 6 : 7,
           itemStyle: { color: signal ? CT().tooltipBg : color, borderColor: color, borderWidth: 1.5 },
           label: {
-            show: true, formatter: m.label ?? '', position: idx >= data.length * 0.8 ? 'left' : 'right', distance: 5,
-            color: CT().tooltipText, fontSize: 11, width: compact ? 78 : 120, overflow: 'truncate',
+            show: true, formatter: `${m.label ?? ''} · ${m.date}`, position: idx >= data.length * 0.8 ? 'left' : 'right', distance: 5,
+            color: CT().tooltipText, fontSize: 11, width: compact ? 180 : 240, overflow: 'truncate',
             backgroundColor: CT().tooltipBg, padding: [2, 3], borderRadius: 2,
           },
           tooltip: {
@@ -507,6 +508,15 @@ function buildMarkerPoints(
             formatter: () => escape(m.detail ?? `${m.date} ${m.label ?? ''}`).replace(/\n/g, '<br/>'),
           },
           z: 100,
+        }
+        markPointData.push(point)
+        // 蜡烛旁的锚点随日期和价格缩放，图外文字仍保留独立行。
+        candleAnchors.push({
+          ...point, y: undefined,
+          symbol: signal ? 'diamond' : 'triangle', symbolSize: signal ? 7 : 11,
+          symbolRotate: isBuy ? 0 : 180,
+          symbolOffset: [0, isBuy ? (signal ? 25 : 12) : (signal ? -25 : -12)],
+          label: { show: false },
         })
       } else if (m.above) {
         const dotColor = m.color ?? (isBuy ? '#FACC15' : CT().text)
@@ -549,7 +559,7 @@ function buildMarkerPoints(
     }
   }
 
-  return markPointData
+  return [...markPointData, ...candleAnchors]
 }
 
 function buildOption(
@@ -691,6 +701,18 @@ function buildOption(
       }
       return { yAxis: line.value, lineStyle, label, symbol: 'none' }
     })
+
+  // 日期定位线贯穿主图；同日多笔与信号/成交共用一条线。
+  const replayDates = new Map((markers ?? [])
+    .filter(m => m.phase && dateIndexMap.has(m.date))
+    .map(m => [m.date, m]))
+  for (const [date, marker] of replayDates) {
+    markLineData.push({
+      xAxis: date,
+      lineStyle: { color: marker.color ?? (marker.kind === 'buy' ? THEME.bull : THEME.bear), type: 'dashed', width: 1, opacity: 0.5 },
+      label: { show: false },
+    })
+  }
 
   if (linkedPrice != null) {
     markLineData.push({

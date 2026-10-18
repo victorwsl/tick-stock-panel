@@ -135,18 +135,25 @@ it('回放把触发与成交放到K线外不同的行，保留真实日期及退
   expect(candle.itemStyle.color0).toBe('#089981')
   expect(candle.itemStyle.borderColor).toBe('#F23645')
   const points = candle.markPoint.data
-  expect(points.map((p: any) => p.name)).toEqual(markers.map(m => m.date))
-  expect(points.map((p: any) => p.symbol)).toEqual(['diamond', 'circle', 'diamond', 'circle'])
+  expect(points.filter((p: any) => p.y != null).map((p: any) => p.name)).toEqual(markers.map(m => m.date))
+  expect(points.filter((p: any) => p.y != null).map((p: any) => p.symbol)).toEqual(['diamond', 'circle', 'diamond', 'circle'])
   expect(points[0].y).toBeGreaterThan(option.grid[0].top + option.grid[0].height)
   expect(points[1].y).toBeLessThan(points[0].y)
   expect(points[2].y).toBeLessThan(points[3].y)
   expect(points[3].y).toBeLessThan(option.grid[0].top)
-  expect(points[3].label.formatter).toBe('卖·跌破白线')
+  expect(points[3].label.formatter).toContain('卖·跌破白线')
   expect(points[3].label.position).toBe('left')
   expect(points[3].tooltip.formatter()).toContain('&lt;说明&gt;')
   await act(async () => { chart.handlers.dataZoom?.() })
   expect(lastMarkPoint()).toContain('卖·跌破白线')
   expect(lastMarkPoint()).not.toContain('arrow')
+
+  const anchors = points.filter((p: any) => p.y == null)
+  expect(anchors.map((p: any) => p.coord[0])).toEqual(markers.map(m => m.date))
+  expect(anchors.map((p: any) => p.symbol)).toEqual(['diamond', 'triangle', 'diamond', 'triangle'])
+  expect(points[0].label.formatter).toContain(DAYS[10])
+  const dateLines = candle.markLine.data.filter((line: any) => line.xAxis != null)
+  expect(dateLines.map((line: any) => line.xAxis)).toEqual(markers.map(m => m.date))
 
   // 用真实 ECharts 渲染同一个配置，避免只验证 mock 的配置对象。
   // jsdom 无 Canvas；SVG 只需文字宽度估计，不依赖像素绘制。

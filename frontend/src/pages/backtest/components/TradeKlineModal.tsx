@@ -1,3 +1,4 @@
+import { GrahamTradeAttribution, grahamMarkers, isGrahamTrade } from "./GrahamTradeAttribution"
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Clock, X } from 'lucide-react'
@@ -98,7 +99,7 @@ export function TradeKlineModal({ trade, navItems, currentKey, onNavigate, onClo
   }, [trade])
 
   const priceLines = useMemo<ChartPriceLine[]>(() => {
-    if (!trade) return []
+    if (!trade || isGrahamTrade(trade)) return []
     const start = String(trade.entry_date).slice(0, 10)
     const end = String(trade.exit_date).slice(0, 10)
     return [
@@ -149,12 +150,12 @@ export function TradeKlineModal({ trade, navItems, currentKey, onNavigate, onClo
                   <NavPager nav={nav} prevLabel="上一笔" nextLabel="下一笔" />
                 </div>
                 <div className="mt-1 text-[11px] text-muted">
-                  {String(trade.entry_date).slice(0, 10)} 买入 → {String(trade.exit_date).slice(0, 10)} 卖出 · 持仓 {trade.duration ?? '—'} 天
+                  {String(trade.entry_date).slice(0, 10)} 买入 → {String(trade.exit_date).slice(0, 10)} {trade.exit_reason === "open_position" ? "期末估值" : "卖出/减仓"} · 持仓 {trade.duration ?? '—'} 天
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-3 text-xs">
                 <div className="text-right">
-                  <div className="text-muted">买 / 卖</div>
+                  <div className="text-muted">{isGrahamTrade(trade) ? "成本 / 退出或估值" : "买 / 卖"}</div>
                   <div className="num text-foreground">{fmtPrice(trade.entry_price)} / {fmtPrice(trade.exit_price)}</div>
                 </div>
                 <div className="text-right">
@@ -189,12 +190,14 @@ export function TradeKlineModal({ trade, navItems, currentKey, onNavigate, onClo
                 height={520}
                 dateRange={dateRange}
                 ranges={ranges}
+                markers={isGrahamTrade(trade) ? grahamMarkers([trade]) : undefined}
                 priceLines={priceLines}
                 showLimitMarkers={false}
                 showMarkerToggle={false}
                 showIntraday={showIntraday}
                 onSelectDate={() => { if (!showIntraday) setShowIntraday(true) }}
               />
+              <GrahamTradeAttribution trades={[trade]} />
             </div>
 
             {/* 首↔尾循环弱提示 */}

@@ -1,3 +1,4 @@
+import { GrahamTradeAttribution, grahamMarkers, isGrahamTrade } from "./GrahamTradeAttribution"
 import { useEffect, useMemo, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { X } from 'lucide-react'
@@ -67,6 +68,7 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
   const { trades, stat, name } = view
 
   const markers = useMemo<ChartMarker[]>(() => {
+    if (trades.some(isGrahamTrade)) return grahamMarkers(trades)
     const reasons: Record<string, string> = {
       three_day_weak: '三日涨幅不足5%', white_not_reclaimed: '跌破白线次日未收复',
       stop_loss: '止损', take_profit: '止盈', trailing_stop: '移动止损',
@@ -152,7 +154,7 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
                     回测 {periodStart} ~ {periodEnd} · {trades.length} 笔交易
                   </div>
                   <div className="mt-1 text-[10px] text-muted/70">
-                    图下买入、图上卖出 · 空心菱形为信号/触发，实心圆为成交 · 卖出旁注明原因，悬停看日期与价格 · 同日多笔合并
+                    图下买入、图上卖出 · 虚线定位日期；K线旁空心菱形为信号、实心三角为成交 · 悬停看价格与原因 · 同日多笔合并
                   </div>
                 </div>
 
@@ -199,6 +201,7 @@ export function PicksSymbolKlineModal({ symbol, result, periodStart, periodEnd, 
                 showIntraday={false}
                 visibleBars="all"
               />
+              <GrahamTradeAttribution trades={trades} />
               <ActiveMvChart start={periodStart} end={periodEnd} />
             </div>
 

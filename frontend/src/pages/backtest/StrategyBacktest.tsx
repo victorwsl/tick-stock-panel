@@ -25,13 +25,15 @@ import { toNavItems } from '@/lib/listNav'
 import { cnSignal } from '@/lib/signals'
 import { useCustomSignalNames } from '@/lib/useCustomSignalNames'
 import { SignalPicker } from '@/components/screener/SignalPicker'
-import { startBacktest, stopBacktest, tryReconnect, useBacktestTask } from '@/lib/backtestTask'
+import { startBacktest, stopBacktest, tryReconnect, useBacktestTask, startBacktestBatch, stopBacktestBatch, useBacktestBatch, clearBacktest, type BacktestRunParams } from '@/lib/backtestTask'
 import { useDataStatus, useCapabilities } from '@/lib/useSharedQueries'
 import { EmptyState } from '@/components/EmptyState'
 import { WarmupBadge } from '@/components/WarmupBadge'
 import { DatePicker } from '@/components/DatePicker'
 import { toast } from '@/components/Toast'
 import { BacktestHistory } from './components/BacktestHistory'
+import { StrategyResearchManager } from './components/StrategyResearchManager'
+import { batchBacktestConfig, researchBacktestPreset, researchPresetLabel, researchConfigError } from './backtestPresets'
 import { StrategyNavChart } from './charts/StrategyNavChart'
 import { ReturnDistributionChart } from './charts/ReturnDistributionChart'
 import { TradeKlineModal, type TradeNavSource } from './components/TradeKlineModal'
@@ -42,6 +44,7 @@ import { WatchlistGroupMenu } from '@/components/WatchlistAddMenu'
 import { ScoringEditor } from '@/components/ScoringEditor'
 import { strategyResultCandidate } from './researchCandidates'
 import { buildDailyNavItems, buildTradeKeyMap, buildTradesNavItems, type TradeNavItem } from './tradeNav'
+import { ReviewSortHeader, sortReviewRows, type ReviewSort } from './reviewSort'
 
 const formatDate = (date: Date) => date.toISOString().slice(0, 10)
 const monthsAgo = (months: number) => {
@@ -199,13 +202,6 @@ const BASIC_FILTER_RANGES = [
 // 策略条件(基础过滤+参数+叠加) / 策略权重 / 风控触发(风控+买卖触发) / 回测范围。
 // 回测抽屉编辑的是本次回测的 overrides, 策略弹窗编辑的是策略定义; 字段与口径两边一致。
 type AdvancedSettingsTab = 'conditions' | 'scoring' | 'trading' | 'range'
-type StrategyGroup = 'all' | 'custom' | 'ai' | 'composite'
-const STRATEGY_GROUPS: { id: StrategyGroup; label: string }[] = [
-  { id: 'all', label: '全部' },
-  { id: 'custom', label: '自定义' },
-  { id: 'ai', label: 'AI' },
-  { id: 'composite', label: '叠加' },
-]
 const ADVANCED_TABS: { id: AdvancedSettingsTab; label: string; icon: typeof Filter }[] = [
   { id: 'conditions', label: '策略条件', icon: Filter },
   { id: 'scoring', label: '策略权重', icon: Star },
@@ -978,7 +974,9 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const signalNames = useSignalNames()
   const [saved] = useState(() => storage.strategyBacktestLast.get(null))
   const [selectedStrategy, setSelectedStrategy] = useState<string | null>(saved?.selectedStrategy ?? null)
-  const [strategyGroup, setStrategyGroup] = useState<StrategyGroup>('all')
+  const [batchChecked, setBatchChecked] = useState<string[]>([])
+  const [batchPreparing, setBatchPreparing] = useState(false)
+  const [batchError, setBatchError] = useState<string | null>(null)
   const [symbols, setSymbols] = useState(saved?.symbols ?? '')
   const [assetType, setAssetType] = useState<'stock' | 'etf'>(saved?.assetType ?? 'stock')
   const [start, setStart] = useState(saved?.start ?? THREE_MONTHS_AGO)
@@ -1079,6 +1077,18 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const [dailyPage, setDailyPage] = useState(0)
   const [tradePage, setTradePage] = useState(0)
   const [tradePageSize, setTradePageSize] = useState(10)
+  const [tradeSort, setTradeSort] = useState<ReviewSort<keyof StrategyBacktestTrade>>({ key: 'exit_date', direction: 'desc' })
+  type SymbolReview = StrategyBacktestResult['per_symbol_stats'][number] & { avg_duration: number | null }
+  const [symbolSort, setSymbolSort] = useState<ReviewSort<keyof SymbolReview> | null>(null)
+  const [reviewLimit, setReviewLimit] = useState(0)
+  const changeTradeSort = (key: keyof StrategyBacktestTrade) => {
+    setTradeSort(prev => ({ key, direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }))
+    setTradePage(0)
+  }
+  const changeSymbolSort = (key: keyof SymbolReview) => {
+    setSymbolSort(prev => ({ key, direction: prev?.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }))
+  }
+
   /** 回测K线覆盖层: 单笔交易回放 / 标的全区间回放, 由 union 保证至多开一个 */
   const [chartOverlay, setChartOverlay] = useState<
     | { kind: 'trade'; trade: StrategyBacktestTrade; source: TradeNavSource }
@@ -1095,9 +1105,6 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     queryFn: () => api.screenerStrategies(assetType, 'all'),
   })
   const strategyList = useMemo(() => strategies.data?.presets ?? [], [strategies.data])
-  const filteredStrategyList = useMemo(() => (
-    strategyGroup === 'all' ? strategyList : strategyList.filter(st => st.source === strategyGroup)
-  ), [strategyGroup, strategyList])
   // 校验 localStorage 里保存的上次选中策略是否仍存在(本地开发残留的自定义策略
   // 拉新代码后会失效,导致 strategyGet 一直 404/加载中)。列表就绪后若失效,
   // 清除过期表单参数，但保留可独立审阅的历史结果。
@@ -1117,7 +1124,11 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   })
 
   const backtestTask = useBacktestTask()
-  const isPending = backtestTask?.isPending ?? false
+  const batch = useBacktestBatch()
+  const isPending = !!backtestTask?.isPending || !!batch?.running || batchPreparing
+  useEffect(() => {
+    if (batch && !batch.running) void queryClient.invalidateQueries({ queryKey: QK.backtestHistory })
+  }, [batch, queryClient])
   const saveCandidate = useMutation({
     mutationFn: () => {
       if (!result) throw new Error('暂无策略结果')
@@ -1192,7 +1203,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 
   // 当全局回测任务完成时, 把结果写入组件 (切页回来也能恢复)
   useEffect(() => {
-    if (backtestTask && !backtestTask.isPending && backtestTask.result) {
+    if (backtestTask && !backtestTask.isPending && backtestTask.result && !backtestTask.result.error) {
       setResult(backtestTask.result)
       setResultTab('daily')
       setDailyPage(0)
@@ -1229,13 +1240,13 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     }
   }, [backtestTask])
 
-  const handleRun = () => {
-    if (!selectedStrategy || backtestDataUnavailable) return
+  const buildRunParams = (strategyId = selectedStrategy): BacktestRunParams | null => {
+    if (!strategyId || backtestDataUnavailable) return null
     const requestOverrides = detail
       ? normalizeStrategyOverrides(detail, overrides)
       : overrides
-    startBacktest({
-      strategy_id: selectedStrategy,
+    return {
+      strategy_id: strategyId,
       asset_type: assetType,
       symbols: symbols ? symbols.split(',').map(s => s.trim()).filter(Boolean) : null,
       start: start || null,
@@ -1244,14 +1255,14 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
       entry_fill: entryFill,
       exit_fill: exitFill,
       commission_pct: Number(fees) / 10000,
-      stamp_tax_pct: Number(stampTax) / 1000,
+      stamp_tax_pct: (strategyId.startsWith('custom_graham_') || strategyId.startsWith('custom_dividend_enhanced_')) ? undefined : Number(stampTax) / 1000,
       slippage_bps: Number(slippage),
       max_positions: Number(maxPositions),
       max_exposure_pct: Number(maxExposure) / 100,
       initial_capital: Number(initialCapital),
       position_sizing: positionSizing,
       params: strategyParams,
-      overrides: requestOverrides,
+      overrides: (strategyId.startsWith('custom_graham_') || strategyId === 'custom_joinquant_smallcap') ? {} : requestOverrides,
       mode: simMode,
       holding_days: Number(holdingDays) || 5,
       minute_fill: isMinuteStrategy ? false : highGranularity,
@@ -1262,7 +1273,62 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
             ...(regimeMinScore !== '' ? { min_score: Number(regimeMinScore) } : {}),
           }
         : null,
-    })
+    }
+  }
+
+  const handleRun = () => {
+    if (isPending) return
+    const config = buildRunParams()
+    if (config) {
+      const error = researchConfigError(config)
+      if (error) { setBatchError(error); return }
+      try { setBatchError(null); startBacktest(config) }
+      catch (error) { setBatchError(error instanceof Error ? error.message : String(error)) }
+    }
+  }
+
+  const selectResearchStrategy = (id: string) => {
+    if (isPending) return
+    setSelectedStrategy(id)
+    const preset = researchBacktestPreset(id)
+    if (!preset) return
+    if (preset.max_positions != null) setMaxPositions(String(preset.max_positions))
+    if (preset.max_exposure_pct != null) setMaxExposure(String(preset.max_exposure_pct * 100))
+    if (preset.position_sizing === 'equal') setPositionSizing('equal')
+    if (preset.mode) setSimMode(preset.mode)
+    setEntryFill('open_t+1'); setExitFill('open_t+1'); setHighGranularity(false)
+    if (preset.symbols === null) setSymbols('')
+    if (preset.regime_filter === null) { setAmvMode(''); setRegimeStates([]); setRegimeMinScore('') }
+    if (preset.commission_pct != null) setFees(String(preset.commission_pct * 10000))
+    if (preset.stamp_tax_pct != null) setStampTax(String(preset.stamp_tax_pct * 1000))
+    if (preset.slippage_bps != null) setSlippage(String(preset.slippage_bps))
+  }
+
+  const restoreResearchBaseline = () => {
+    if (!selectedStrategy || isPending) return
+    selectResearchStrategy(selectedStrategy)
+    setInitialCapital('1000000')
+    if (detail) resetConfigFromDetail(detail)
+  }
+
+  const handleBatchRun = async () => {
+    if (isPending || !batchChecked.length) return
+    // Snapshot common inputs before any async work; no draft from another strategy leaks in.
+    const base = buildRunParams(batchChecked[0])
+    if (!base) return
+    setBatchPreparing(true); setBatchError(null)
+    try {
+      const queue = await Promise.all(batchChecked.map(async id => {
+        if (!strategyList.some(item => item.id === id)) throw new Error('勾选项已不在当前资产的策略列表，请重新选择')
+        if (id === 'custom_dividend_enhanced_strict') throw new Error('红利原版输入尚未对齐，请取消勾选该项，使用日频本地研究版')
+        const ownDetail = await api.strategyGet(id)
+        return { name: ownDetail.name, params: batchBacktestConfig(base, id,
+          strategyDefaultParams(ownDetail), buildDefaultOverrides(ownDetail)) }
+      }))
+      startBacktestBatch(queue)
+    } catch (error) {
+      setBatchError(`批量尚未启动：${error instanceof Error ? error.message : String(error)}`)
+    } finally { setBatchPreparing(false) }
   }
 
   // 环境数据缺口识别: fail-closed 报错文案中提取缺失首日, 供"一键补算并重跑"。
@@ -1424,12 +1490,24 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   }`
 
   const sortedTrades = useMemo(() => {
-    return [...(result?.trades ?? [])].sort((a, b) => {
-      const exitCmp = String(b.exit_date).localeCompare(String(a.exit_date))
-      if (exitCmp !== 0) return exitCmp
-      return String(b.entry_date).localeCompare(String(a.entry_date))
+    const original = [...(result?.trades ?? [])].sort((a, b) =>
+      String(b.exit_date).localeCompare(String(a.exit_date)) || String(b.entry_date).localeCompare(String(a.entry_date)))
+    return sortReviewRows(original, tradeSort, reviewLimit)
+  }, [result?.trades, tradeSort, reviewLimit])
+
+  const sortedSymbols = useMemo(() => {
+    const holding = new Map<string, { total: number; count: number }>()
+    for (const t of result?.trades ?? []) {
+      if (!Number.isFinite(t.duration)) continue
+      const old = holding.get(t.symbol) ?? { total: 0, count: 0 }
+      holding.set(t.symbol, { total: old.total + t.duration, count: old.count + 1 })
+    }
+    const rows = (result?.per_symbol_stats ?? []).map(stat => {
+      const h = holding.get(stat.symbol)
+      return { ...stat, avg_duration: h?.count ? h.total / h.count : null }
     })
-  }, [result?.trades])
+    return sortReviewRows(rows, symbolSort, reviewLimit)
+  }, [result?.per_symbol_stats, result?.trades, symbolSort, reviewLimit])
 
   const dailyTradeRows = useMemo<DailyTradeRow[]>(() => {
     const rows = new Map<string, Omit<DailyTradeRow, 'cumulativePnl'>>()
@@ -1488,8 +1566,8 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 
   // 策略分析弹窗的切标的候选 (与表格同序, 保证计数与「上一只/下一只」一致)
   const picksNavItems = useMemo(
-    () => toNavItems(result?.per_symbol_stats ?? []),
-    [result?.per_symbol_stats],
+    () => toNavItems(sortedSymbols),
+    [sortedSymbols],
   )
 
   // ===== 单笔回放的切交易链 =====
@@ -1552,6 +1630,8 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const minuteExitTriggerSupported = effectiveExitSignals.length > 0 && unsupportedMinuteExitSignals.length === 0
   // 分钟策略: 入场在盘中触发分钟成交, 日线专属的成交口径选项不适用
   const isMinuteStrategy = detail?.execution_backend === 'minute_filter'
+  const singleConfig = buildRunParams()
+  const singleConfigError = singleConfig ? researchConfigError(singleConfig) : null
   const { data: minuteDataStatus } = useQuery({
     queryKey: QK.dataStatus,
     queryFn: api.dataStatus,
@@ -1678,6 +1758,30 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
             <p className="mt-1 text-muted">买卖均选次日开盘，关闭分钟细化及额外退出覆盖。胜率50%、实际盈亏比≥3是研究目标，账户完整验收尚未通过。</p>
           </div>
         )}
+        {selectedStrategy === 'custom_dividend_enhanced_daily_local' && (
+          <div role="status" className="space-y-2 rounded-btn border border-border bg-elevated px-2 py-2 text-xs leading-relaxed text-secondary">
+            <p>红利增强日频研究：高股息低Beta＋红利价值，月线MACD切换1＋4或4＋1；新票分配资金，旧仓保持。使用本地252日Beta与累计财务，关闭11点开板和防御ETF，闲置资金留现金。</p>
+            <button className="rounded-btn border border-border px-2 py-1 text-foreground hover:bg-surface" onClick={restoreResearchBaseline}>使用红利日频基线·100万·5只</button>
+            <p>佣金万1.5、最低5元，印花税按历史日期，双边滑点10基点。不是聚宽原版等价复现；缺失因子不放宽筛选，分红歧义与排除明细随结果保存。</p>
+          </div>
+        )}
+        {selectedStrategy === 'custom_dividend_enhanced_strict' && (
+          <p role="status" className="text-xs leading-relaxed text-secondary">原版核对入口暂不生成收益：平台因子及11点成交未对齐。如研究月调核心，请选择“红利增强〔日频本地口径·非原版〕”。</p>
+        )}
+        {selectedStrategy === 'custom_joinquant_smallcap' && (
+          <div role="status" className="space-y-2 rounded-btn border border-border bg-elevated px-2 py-2 text-xs leading-relaxed text-secondary">
+            <p>聚宽日频复现：前收总市值20—30亿，开盘过滤停牌代理后选最小3只；从固定锚点起每5交易日先全卖再买。仍入选也重新成交，卖不出占名额；无额外ST、盈利或止损过滤。</p>
+            <button className="rounded-btn border border-border px-2 py-1 text-foreground hover:bg-surface" onClick={restoreResearchBaseline}>使用聚宽基线·100万·3只</button>
+            <p className="text-muted">原every_bar频率未知，已固定日频；开盘正报价代理未停牌，历史成交额1%容量上限，不读取当天全日成交量。佣金万三、印花税千一，另计过户费及滑点；修改费用另存情景。回放查看前收市值和五日清仓原因。</p>
+          </div>
+        )}
+        {selectedStrategy?.startsWith('custom_graham_') && (
+          <div role="status" className="space-y-2 rounded-btn border border-border bg-elevated px-2 py-2 text-xs leading-relaxed text-secondary">
+            <p>Graham月调研究：月末选20只、次日开盘；不足留现金，保留持仓按月调整目标权重。财报原始版本、多股类及历史状态覆盖尚未完整验收，不承诺年化50%。NCAV严格模式缺优先权益时不入选。</p>
+            <button className="rounded-btn border border-border px-2 py-1 text-foreground hover:bg-surface" onClick={restoreResearchBaseline}>使用100万·20槽·日线基线</button>
+            <p className="text-muted">原始价记账；印花税按历史日期、最低佣金5元。标的回放下方查看财务快照、分数贡献和真实买入明细。</p>
+          </div>
+        )}
         {selectedStrategy === 'personal_zhixing_pullback_v0' && (
           <div role="status" className="rounded-btn border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-xs leading-relaxed text-amber-400">
             信号试验版：白黄线、回调再转强及收盘计划盈亏比已接入。半仓退出、开盘重新计算盈亏比、公司行动账本尚未验收；当前曲线不能用于实盘决策。
@@ -1742,53 +1846,14 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
               </div>
             </div>
           )}
-          <div className="overflow-hidden rounded-input border border-border bg-surface">
-            <div className="flex border-b border-border/60 bg-base/30 p-0.5">
-              {STRATEGY_GROUPS.map(group => (
-                <button
-                  key={group.id}
-                  type="button"
-                  onClick={() => setStrategyGroup(group.id)}
-                  className={`flex-1 rounded-[6px] px-1.5 py-1 text-[10px] font-medium transition-colors ${strategyGroup === group.id
-                    ? 'bg-accent/15 text-accent shadow-sm'
-                    : 'text-muted hover:bg-elevated/70 hover:text-secondary'
-                  }`}
-                >
-                  {group.label}
-                </button>
-              ))}
-            </div>
-            <div className="flex max-h-[128px] flex-wrap gap-1 overflow-y-auto p-1">
-            {strategies.isLoading && (
-              <span className="text-xs text-muted px-2 py-1">加载中…</span>
-            )}
-            {!strategies.isLoading && filteredStrategyList.length === 0 && (
-              <span className="text-xs text-muted px-2 py-1">当前分组暂无策略</span>
-            )}
-            {filteredStrategyList.map(st => (
-              <button
-                key={st.id}
-                onClick={() => setSelectedStrategy(st.id)}
-                className={`px-2 py-1 rounded-btn text-[11px] border transition-all duration-150 ease-smooth cursor-pointer
-                  ${selectedStrategy === st.id
-                    ? 'border-accent/50 bg-accent/10 text-accent shadow-[0_0_10px_rgba(59,130,246,0.1)]'
-                    : 'border-border bg-base text-secondary hover:border-accent/40'
-                  }`}
-              >
-                <span className="font-medium">{st.name}</span>
-                {st.timeframes?.includes('1m') && (
-                  <span className="ml-1 text-[8px] px-1 py-px rounded border border-sky-500/30 bg-sky-500/10 text-sky-400">分钟</span>
-                )}
-                {st.source && (
-
-                  <span className={`ml-1 text-[8px] px-1 py-px rounded border ${BADGE_CLS_MAP[st.source] ?? ''}`}>
-                    {SRC_MAP[st.source] ?? ''}
-                  </span>
-                )}
-              </button>
-            ))}
-            </div>
-          </div>
+          <StrategyResearchManager strategies={strategyList} selected={selectedStrategy}
+            onSelect={selectResearchStrategy} disabled={isPending} checked={batchChecked}
+            onCheckedChange={setBatchChecked} onEdit={() => detail && setSettingsOpen(true)} />
+          {strategies.isLoading && <p className="text-xs text-muted">正在读取策略…</p>}
+          {strategies.isError && <p role="alert" className="text-xs text-danger">策略列表读取失败，请刷新重试。</p>}
+          {selectedStrategy && researchBacktestPreset(selectedStrategy) && <p className="mt-2 text-xs text-secondary">
+            选择时填入研究基线：{researchPresetLabel(selectedStrategy)}。运行前仍可检查左侧设置；历史结果不变。
+          </p>}
         </div>
 
         {selectedStrategy && strategyDetail.isLoading && (
@@ -2040,20 +2105,26 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
           </div>
         )}
 
+        {singleConfigError && <div role="alert" className="space-y-2 text-xs text-danger">
+          <p>{singleConfigError}</p>
+          {selectedStrategy && researchBacktestPreset(selectedStrategy) && <button type="button" disabled={isPending}
+            className="rounded-btn border border-border px-2 py-1 text-accent disabled:opacity-50"
+            onClick={() => selectedStrategy && selectResearchStrategy(selectedStrategy)}>恢复所选策略研究基线</button>}
+        </div>}
         {isPending ? (
           <button
-            onClick={stopBacktest}
+            onClick={() => batch?.running ? void stopBacktestBatch() : void stopBacktest()}
             className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-btn
               bg-danger/15 border border-danger/40 text-sm font-medium text-danger hover:bg-danger/25
               transition-colors duration-150 ease-smooth"
           >
             <Square className="h-3.5 w-3.5 fill-current" />
-            停止回测
+            {batch?.running ? '停止批量及当前回测' : batchPreparing ? '正在准备批量…' : '停止回测'}
           </button>
         ) : (
           <button
             onClick={handleRun}
-            disabled={!selectedStrategy || strategyDetail.isLoading || backtestDataUnavailable}
+            disabled={!selectedStrategy || strategyDetail.isLoading || backtestDataUnavailable || !!singleConfigError}
             className="group w-full inline-flex items-center justify-center gap-2.5 rounded-btn border border-accent/40
               bg-gradient-to-r from-accent to-blue-500 px-3 py-2.5 text-white shadow-[0_10px_24px_rgba(59,130,246,0.22)]
               transition-all duration-150 ease-smooth hover:-translate-y-0.5 hover:shadow-[0_14px_28px_rgba(59,130,246,0.28)]
@@ -2062,14 +2133,46 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/18 ring-1 ring-white/25 transition-transform group-hover:scale-105">
               <Play className="h-3.5 w-3.5 translate-x-px fill-current" />
             </span>
-            <span className="text-sm font-semibold tracking-wide">运行回测</span>
+            <span className="text-sm font-semibold tracking-wide">运行当前策略</span>
           </button>
         )}
+        <div className="space-y-2 border-t border-border pt-3 text-xs">
+          <button type="button" onClick={() => void handleBatchRun()}
+            disabled={isPending || !batchChecked.length || backtestDataUnavailable}
+            className="w-full rounded-btn border border-accent/40 px-3 py-2 text-accent hover:bg-accent/10 disabled:opacity-50">
+            批量初筛 · {batchChecked.length}条策略
+          </button>
+          <p className="text-muted">共用日期和本金，各用已保存的策略规则。小市值/红利使用各自日线仓位与费用基线；其余使用左侧账户设置。逐条执行，成功后自动存档。</p>
+          {!!batchChecked.length && <details>
+            <summary className="cursor-pointer text-secondary">查看本次批量配置</summary>
+            <ul className="mt-1 space-y-1 text-muted">{batchChecked.map(id => <li key={id}>
+              {strategyList.find(st => st.id === id)?.name ?? id}：{researchPresetLabel(id)}
+            </li>)}</ul>
+          </details>}
+          {batchError && <p role="alert" className="text-danger">{batchError}</p>}
+          {!isPending && backtestTask?.error?.includes('状态未知') && <div className="flex flex-wrap gap-3">
+            <button type="button" className="text-accent" onClick={() => tryReconnect()}>重连确认当前任务</button>
+            <button type="button" className="text-danger" onClick={() => void stopBacktest()}>确认停止当前任务</button>
+          </div>}
+        </div>
       </section>
 
       {/* 结果面板 */}
       <section className="min-w-0 space-y-3 bg-base/15 px-3 py-3 xl:overflow-y-auto">
-        <BacktestHistory result={result} pending={isPending} onLoad={loaded => {
+        {batch && <div className="space-y-2 rounded-btn border border-border p-3 text-xs">
+          <p className="font-medium">批量初筛 · {batch.running ? '正在逐条执行' : '本轮已结束'}</p>
+          <p className="text-muted">完成结果可在下方历史记录中复盘。切换页面可继续；刷新或关闭浏览器后，尚未启动的条目不自动执行。</p>
+          <ul className="divide-y divide-border">{batch.items.map((item, index) => <li key={`${index}:${item.strategy_id}`} className="py-2">
+            <div className="flex flex-wrap justify-between gap-2"><span>{item.name}</span>
+              <span>{({ queued: '等待', running: '运行中', success: '完成', error: '失败', cancelled: '已停止' })[item.status]}</span></div>
+            {item.error && <p className="mt-1 break-words text-danger">{item.error}</p>}
+            {item.history_error && <p className="mt-1 break-words text-danger">{item.history_error}</p>}
+          </li>)}</ul>
+        </div>}
+        <BacktestHistory result={result} pending={isPending} onDelete={id => {
+          if (result?.history_id === id) { setResult(null); setChartOverlay(null) }
+          if (backtestTask?.result?.history_id === id) clearBacktest()
+        }} onLoad={loaded => {
           setResult(loaded)
           setResultTab('daily')
           setDailyPage(0)
@@ -2249,7 +2352,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
               )}
               <button
                 type="button"
-                onClick={stopBacktest}
+                onClick={() => batch?.running ? void stopBacktestBatch() : void stopBacktest()}
                 className="inline-flex shrink-0 items-center gap-1 rounded-btn border border-danger/40 bg-danger/10 px-2 py-1 text-[11px] text-danger transition-colors hover:bg-danger/20"
               >
                 <Square className="h-3 w-3 fill-current" />
@@ -2500,6 +2603,10 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
               </div>
             )}
 
+            {Array.isArray(result.stats.research_warnings) && <div role="note" className="border-t border-border px-4 py-3 text-xs leading-relaxed text-muted">
+              {result.stats.research_warnings.map((text: string) => <p key={text}>{text}</p>)}
+              <p>期末未卖出仅估值；胜率按已实现减仓批次统计。归因页比较的是描述统计，不证明因果。</p>
+            </div>}
             {/* Tab: 按日期 / 交易明细 / 策略分析 / 因子归因 */}
             {(result.trades.length > 0 || result.per_symbol_stats.length > 0 || (result.factor_attribution?.factors.length ?? 0) > 0) && (
               <div className="rounded-card border border-border overflow-hidden">
@@ -2520,7 +2627,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                         {t === 'daily'
                           ? `每日交易 (${dailyTradeRows.length})`
                           : t === 'trades'
-                          ? `交易明细 (${sortedTrades.length})`
+                          ? `交易明细 (${result.trades.length})`
                           : t === 'picks'
                           ? `策略分析 (${result.per_symbol_stats.length})`
                           : `因子归因 (${attributionCount})`}
@@ -2528,6 +2635,20 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                     )
                   })}
                 </div>
+
+                {(resultTab === 'trades' || resultTab === 'picks') && (
+                  <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-xs text-muted">
+                    <span>点击列头升降序排列，按当前顺序连续回放</span>
+                    <label className="ml-auto flex items-center gap-2">
+                      复盘范围
+                      <select aria-label="复盘范围" value={reviewLimit} onChange={e => { setReviewLimit(Number(e.target.value)); setTradePage(0) }}
+                        className="rounded-btn border border-border bg-surface px-2 py-1 text-secondary focus-visible:outline focus-visible:outline-accent">
+                        <option value={0}>全部</option>
+                        {[10, 20, 50, 100].map(n => <option key={n} value={n}>Top {n}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                )}
 
                 {resultTab === 'daily' && (
                   <div>
@@ -2620,13 +2741,15 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                     <table className="w-full min-w-[960px] text-sm text-foreground">
                       <thead className="bg-elevated">
                         <tr className="text-left text-secondary">
-                          <th className="px-4 py-2.5 font-medium">标的</th>
-                          <th className="px-4 py-2.5 font-medium">买入</th>
-                          <th className="px-4 py-2.5 font-medium">卖出</th>
-                          <th className="px-4 py-2.5 font-medium text-right">仓位 / 手数</th>
-                          <th className="px-4 py-2.5 font-medium text-right">单票盈亏</th>
-                          <th className="px-4 py-2.5 font-medium text-right">持仓</th>
-                          <th className="px-4 py-2.5 font-medium">原因</th>
+                          <ReviewSortHeader column="symbol" sort={tradeSort} onSort={changeTradeSort} align="left">标的</ReviewSortHeader>
+                          <ReviewSortHeader column="entry_date" sort={tradeSort} onSort={changeTradeSort} align="left">买入</ReviewSortHeader>
+                          <ReviewSortHeader column="exit_date" sort={tradeSort} onSort={changeTradeSort} align="left">卖出</ReviewSortHeader>
+                          <ReviewSortHeader column="entry_score" sort={tradeSort} onSort={changeTradeSort}>入场分</ReviewSortHeader>
+                          <ReviewSortHeader column="position_pct" sort={tradeSort} onSort={changeTradeSort}>仓位</ReviewSortHeader>
+                          <ReviewSortHeader column="pnl_amount" sort={tradeSort} onSort={changeTradeSort}>单票盈亏</ReviewSortHeader>
+                          <ReviewSortHeader column="pnl_pct" sort={tradeSort} onSort={changeTradeSort}>盈亏率</ReviewSortHeader>
+                          <ReviewSortHeader column="duration" sort={tradeSort} onSort={changeTradeSort}>持仓</ReviewSortHeader>
+                          <ReviewSortHeader column="exit_reason" sort={tradeSort} onSort={changeTradeSort} align="left">原因</ReviewSortHeader>
                         </tr>
                       </thead>
                       <tbody>
@@ -2659,6 +2782,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                             <td className="px-4 py-2.5">
                               <TradeLegCell trade={t} side="sell" signalNames={signalNames} />
                             </td>
+                            <td className="px-4 py-2.5 text-right num">{t.entry_score == null ? '—' : t.entry_score.toFixed(2)}</td>
                             <td className="px-4 py-2.5 text-right">
                               <div className="num text-foreground">{fmtPct(t.position_pct, 2)}</div>
                               <div className="mt-0.5 text-[11px] text-muted">
@@ -2668,8 +2792,8 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                             </td>
                             <td className={`px-4 py-2.5 text-right num ${priceColorClass(t.pnl_amount ?? t.pnl_pct)}`}>
                               <div>{fmtSignedMoney(t.pnl_amount)}</div>
-                              <div className="mt-0.5 text-[11px]">{fmtPct(t.pnl_pct)}</div>
                             </td>
+                            <td className={`px-4 py-2.5 text-right num ${priceColorClass(t.pnl_pct)}`}>{fmtPct(t.pnl_pct)}</td>
                             <td className="px-4 py-2.5 text-right num text-secondary">
                               <div>{t.duration} 天</div>
                               {!!t.blocked_exit_days && <div className="mt-0.5 text-[11px] text-amber-400">阻塞 {t.blocked_exit_days} 天</div>}
@@ -2727,19 +2851,21 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                 )}
 
                 {resultTab === 'picks' && (
-                  <table className="w-full text-sm">
+                  <div className="overflow-x-auto">
+                  <table className="w-full min-w-[800px] text-sm">
                     <thead className="bg-elevated">
                       <tr className="text-left text-secondary">
-                        <th className="px-4 py-2.5 font-medium">标的</th>
-                        <th className="px-4 py-2.5 font-medium text-right">入选次数</th>
-                        <th className="px-4 py-2.5 font-medium text-right">总收益</th>
-                        <th className="px-4 py-2.5 font-medium text-right">胜率</th>
-                        <th className="px-4 py-2.5 font-medium text-right">最佳</th>
-                        <th className="px-4 py-2.5 font-medium text-right">最差</th>
+                        <ReviewSortHeader column="symbol" sort={symbolSort} onSort={changeSymbolSort} align="left">标的</ReviewSortHeader>
+                        <ReviewSortHeader column="n_trades" sort={symbolSort} onSort={changeSymbolSort}>入选次数</ReviewSortHeader>
+                        <ReviewSortHeader column="total_return" sort={symbolSort} onSort={changeSymbolSort}>总收益</ReviewSortHeader>
+                        <ReviewSortHeader column="avg_duration" sort={symbolSort} onSort={changeSymbolSort}>平均持仓天数</ReviewSortHeader>
+                        <ReviewSortHeader column="win_rate" sort={symbolSort} onSort={changeSymbolSort}>胜率</ReviewSortHeader>
+                        <ReviewSortHeader column="best" sort={symbolSort} onSort={changeSymbolSort}>最佳</ReviewSortHeader>
+                        <ReviewSortHeader column="worst" sort={symbolSort} onSort={changeSymbolSort}>最差</ReviewSortHeader>
                       </tr>
                     </thead>
                     <tbody>
-                      {result.per_symbol_stats.map((r) => (
+                      {sortedSymbols.map((r) => (
                         <tr
                           key={r.symbol}
                           onClick={() => setChartOverlay({ kind: 'symbol', symbol: r.symbol })}
@@ -2766,6 +2892,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                           <td className={`px-4 py-2 text-right num ${priceColorClass(r.total_return)}`}>
                             {fmtPct(r.total_return)}
                           </td>
+                          <td className="px-4 py-2 text-right num">{r.avg_duration == null ? '—' : r.avg_duration.toFixed(1)}</td>
                           <td className="px-4 py-2 text-right num">{fmtPct(r.win_rate)}</td>
                           <td className="px-4 py-2 text-right num text-bull">{fmtPct(r.best)}</td>
                         <td className="px-4 py-2 text-right num text-bear">{fmtPct(r.worst)}</td>
@@ -2773,6 +2900,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 )}
 
                 {/* 因子归因: 入场信号日因子值 × 成交盈亏 */}
