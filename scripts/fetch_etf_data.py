@@ -6,7 +6,6 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.services.etf_research.audit import digest, safe_path

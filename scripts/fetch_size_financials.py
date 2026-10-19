@@ -7,11 +7,11 @@ the canonical financial store and production factor library are never modified.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -28,7 +28,7 @@ def normalize(frame):
     if missing:
         raise ValueError('财务接口缺字段：'+','.join(sorted(missing)))
     f = frame[list(FIELDS)].copy()
-    for c in KEY + ['update_flag']:
+    for c in [*KEY, 'update_flag']:
         f[c] = f[c].astype('string')
     f['profit_dedt'] = pd.to_numeric(f.profit_dedt, errors='raise')
     valid = (f.ann_date.str.fullmatch(r'\d{8}', na=False)
@@ -61,7 +61,12 @@ def main():
     parser.add_argument('--cached-periods', type=Path, help='Reuse previously fetched raw quarter files for revalidation')
     args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-    from app.services.personal_tushare import TushareClient, fetch_period_pages, load_env, quarter_end_periods
+    from app.services.personal_tushare import (
+        TushareClient,
+        fetch_period_pages,
+        load_env,
+        quarter_end_periods,
+    )
     if args.env_file:
         load_env(args.env_file)
 
@@ -98,7 +103,7 @@ def main():
     clean.to_parquet(output/'fina_indicator.parquet', index=False)
     quarantine.to_parquet(output/'quarantine.parquet', index=False)
     pd.DataFrame(audit).to_csv(output/'coverage.csv', index=False)
-    manifest = dict(status='fetched_validated', fetched_at=datetime.now(timezone.utc).isoformat(),
+    manifest = dict(status='fetched_validated', fetched_at=datetime.now(UTC).isoformat(),
                     api='fina_indicator_vip', fields=FIELDS, start=args.start, end=args.end,
                     rows=len(clean), nonnull_earnings=int(clean.profit_dedt.notna().sum()),
                     quarantined=len(quarantine), command=sys.argv, code_sha256=sha(__file__),

@@ -34,7 +34,13 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-    from app.services.personal_tushare import TushareClient, fetch_period_pages, frame_from_payload, load_env, quarter_end_periods
+    from app.services.personal_tushare import (
+        TushareClient,
+        fetch_period_pages,
+        frame_from_payload,
+        load_env,
+        quarter_end_periods,
+    )
     if args.env_file:
         load_env(args.env_file)
 
