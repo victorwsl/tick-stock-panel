@@ -183,3 +183,34 @@ backend/.venv/bin/python scripts/personal_trial.py serve
 修复冻结因子TopK对账遗漏缺失分组、缺失统计值的问题，补两组反例；策略管理保留原有自定义/AI/叠加来源筛选，可与研究分类组合。合并两套研究策略重复的标的盈亏汇总、三个恢复研究基线按钮；接口参数交给框架校验，删除多层启动状态兜底和过宽异常捕获。保留交易约束、数据真实性校验与历史删除的路径限制。
 
 验证：194项相关后端测试、69项不同的前端测试通过（68项相关回归后，补回来源筛选并重跑该组件5项，其中1项新增）；最终TypeScript检查和Vite生产构建通过。新增后端与脚本的Ruff F规则通过；代码差异检查通过。原平台参考源码保持原样用于指纹记录。保留Polars分组asof排序提示、Vite大包提示；真实浏览器视觉与完整账户实盘验收未完成。
+
+
+## 本仓库Tushare采集与持久化（2026-10-19）
+
+访问、凭证、限频和有限重试已从TradingSimple迁入`backend/app/services/personal_tushare.py`，不需要另一份仓库或Tushare SDK。读取`TUSHARE_TOKEN`/`tushare_token`或`TUSHARE_TOKEN_FILE`；已有配置可通过`--env-file`读取，只接收Tushare配置项。不会写`~/tk.csv`、复制Token或修改shell。沿用旧仓库当前默认`https://fast.xiaodefa.cn`，可用`TUSHARE_API_URL`/`tushare_api_url`显式切换已核对的官方地址或`https://tt.xiaodefa.cn`；保持TLS验证，不跟随跳转、不使用代理环境。
+
+通用补数命令先查本地的同一请求块，缺失才联网；结果按资产、接口和请求指纹写入Parquet及`receipt.json`。请求指纹包含数据源、参数和字段，Token不参与。重复执行可直接读本地，不需要Token；文件损坏拒绝覆盖。数据源、字段或日期区间变化属于新请求，**没有实现任意重叠区间的逐行缺口合并**。不同股票、ETF、指数、日历和财务分别存放。
+
+例如获取一只ETF五天原始日线：
+
+```bash
+backend/.venv/bin/python scripts/fetch_tushare_data.py \
+  --cache-dir data/tushare_cache --asset etf --api fund_daily \
+  --params '{"ts_code":"510050.SH","start_date":"20261012","end_date":"20261016"}' \
+  --fields ts_code,trade_date,open,high,low,close,pre_close,vol,amount
+```
+
+输出JSON给出实际Parquet路径、行数和`cache_hit`；再执行同一命令应为`true`。原始价格、量额单位保持供应商口径，不把缓存直接当成已校验行情。空响应退出2并标`empty_unverified`；权限/网络/字段/日期/重复键/截断门槛错误退出1，不生成成功清单。达到单次行数门槛须缩小范围；通用命令不会假装已完成分页。需要有系统缺口审计、自动分段及中断续传的ETF研究使用`audit_etf_data.py`→`fetch_etf_data.py`，继续保留C07/C08门槛。原在用缓存、规范行情和历史回测不由通用命令覆盖。
+
+财务采集入口也已改为本仓库客户端，保留逐季度缓存、财务版本与冲突隔离。旧`--collector-root`参数仅为旧命令兼容保留，不读取该路径：
+
+```bash
+backend/.venv/bin/python scripts/fetch_size_financials.py \
+  --output data/tushare_financials/<新编号> --start 20260331 --end 20260630
+backend/.venv/bin/python scripts/fetch_value_momentum.py \
+  --output data/tushare_value_momentum/<新编号>
+```
+
+财务脚本仍按原研究字段及范围工作；它们不是全市场所有数据的一键迁移器。季度分页有次数上限及重复页保护，限频/超时仅有限重试，权限不足不反复请求。已封存结果拒绝覆盖。股票和ETF旧显式sync入口共用新连接模块，原导入规则与已有缓存路径保留；长历史股票不能用短窗口sync覆盖，仍遵守上文限制。
+
+**使用顺序是补数落盘→核验与规范化→导入/发布版本→本地研究。** Web、因子、策略和回测不隐式联网补数；这一轮没有重启Web、自动导入或发布ETF数据。实际第三方请求被自动审批拦截，需明确授权向`https://fast.xiaodefa.cn`发送现有Token后再做真实下载验收；不需要在聊天中提供Token。

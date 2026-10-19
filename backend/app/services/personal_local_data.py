@@ -1,37 +1,21 @@
 """显式补数入口；Web和provider永不调用此模块的网络方法。"""
 from __future__ import annotations
 
-import os
-import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
-import httpx
 import polars as pl
 
 from app.services.fs_utils import atomic_write_parquet
+from app.services.personal_tushare import TushareClient
+from app.services.personal_tushare import get_token as _token  # noqa: F401 -- 保留既有导入契约
 
 
 def cache_dir() -> Path:
     from app.config import settings
     return settings.data_dir.resolve() / 'source_cache'
 
-
-def _token() -> str:
-    value = os.environ.get('TUSHARE_TOKEN') or os.environ.get('tushare_token')  # noqa: SIM112 -- 兼容现有本地采集环境
-    if not value and os.environ.get('TUSHARE_TOKEN_FILE'):
-        path = Path(os.environ['TUSHARE_TOKEN_FILE']).expanduser()
-        if path.is_file():
-            value = path.read_text().strip()
-            for line in value.splitlines():
-                if '=' in line and line.split('=', 1)[0].strip() in {'TUSHARE_TOKEN', 'tushare_token', 'TOKEN', 'token'}:
-                    value = line.split('=', 1)[1].strip().strip('\"\'')
-                    break
-    if not value:
-        raise ValueError('未配置Tushare凭证；本地已有缓存仍可读取')
-    return value.strip().strip('\"\'')
 
 
 def fetch_missing(days: int = 120) -> dict:
@@ -44,35 +28,16 @@ def fetch_missing(days: int = 120) -> dict:
              ['trade_date'].cast(pl.String).to_list())
     if len(dates) < 65:
         raise ValueError('本地不足65个交易日，不能计算首页60日趋势')
-    token = _token()
-    endpoint = os.environ.get('TUSHARE_API_URL') or os.environ.get('tushare_api_url', 'https://tt.xiaodefa.cn')  # noqa: SIM112
-    lock = threading.Lock()
-    last = [0.0]
+    client = TushareClient()
     def call(api, params, fields):
-        for attempt in range(3):
-            with lock:
-                time.sleep(max(0, 0.6 - (time.monotonic() - last[0])))
-                last[0] = time.monotonic()
-            try:
-                with httpx.Client(timeout=60, trust_env=False) as client:
-                    response = client.post(endpoint, json={
-                        'api_name': api, 'token': token, 'params': params, 'fields': fields})
-                    response.raise_for_status()
-                    payload = response.json()
-                if payload.get('code') != 0:
-                    raise ValueError(f'Tushare {api} 返回错误代码 {payload.get("code")}')
-                data = payload.get('data') or {}
-                frame = pl.DataFrame(data.get('items') or [], schema=data.get('fields') or [], orient='row')
-                if frame.is_empty():
-                    raise ValueError(f'Tushare {api} 返回空数据')
-                if frame.select(pl.struct('ts_code', 'trade_date').is_duplicated().any()).item():
-                    raise ValueError(f'Tushare {api} 返回重复键')
-                return frame
-            except (httpx.HTTPError, ValueError):
-                if attempt == 2:
-                    raise RuntimeError(f'补数失败：{api} {params}；未修改原始数据') from None
-                time.sleep(2 * (attempt + 1))
-        raise AssertionError('unreachable')
+        payload = client.query(api, params, fields)
+        data = payload["data"]
+        frame = pl.DataFrame(data.get("items") or [], schema=data.get("fields") or [], orient="row")
+        if frame.is_empty():
+            raise ValueError(f'Tushare {api} 返回空数据')
+        if frame.select(pl.struct('ts_code', 'trade_date').is_duplicated().any()).item():
+            raise ValueError(f'Tushare {api} 返回重复键')
+        return frame
 
     def one(d):
         counts = {}

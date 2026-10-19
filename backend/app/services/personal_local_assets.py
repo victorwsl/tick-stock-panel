@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import time
 from datetime import date
 from pathlib import Path
 
@@ -111,11 +109,8 @@ def seed_etfs(paths: list[Path]) -> dict:
 
 
 def sync_etfs() -> dict:
-    import httpx
-
-    from app.services.personal_local_data import _token
-    token = _token()
-    endpoint = os.environ.get('TUSHARE_API_URL') or os.environ.get('tushare_api_url', 'https://tt.xiaodefa.cn')  # noqa: SIM112
+    from app.services.personal_tushare import TushareClient
+    client = TushareClient()
     target = pl.scan_parquet(source_path().with_name('daily_qfq.parquet')).select(pl.col('trade_date').max()).collect().item()
     provider = LocalParquetProvider()
     counts = 0
@@ -130,27 +125,14 @@ def sync_etfs() -> dict:
             if (date.fromisoformat(f'{target[:4]}-{target[4:6]}-{target[6:]}') -
                 date.fromisoformat(f'{start[:4]}-{start[4:6]}-{start[6:]}')).days > 1000:
                 raise ValueError('ETF缺口超过1000自然日，须分段补数，未请求')
-            for attempt in range(3):
-                time.sleep(0.65 + attempt * 2)
-                try:
-                    response = httpx.post(endpoint, json={'api_name': api, 'token': token,
-                        'params': {'ts_code': symbol, 'start_date': start, 'end_date': target}, 'fields': fields},
-                        timeout=60, trust_env=False)
-                    response.raise_for_status()
-                    payload = response.json()
-                    if payload.get('code') != 0:
-                        raise ValueError('API错误')
-                    data = payload.get('data') or {}
-                    new = pl.DataFrame(data.get('items') or [], schema=data.get('fields') or [], orient='row')
-                    if new.is_empty() or new.height >= 2000:
-                        raise ValueError('空数据或达到截断门槛')
-                    _unique(new)
-                    if set(new['ts_code']) != {symbol} or new['trade_date'].max() > target or new['trade_date'].min() < start:
-                        raise ValueError('返回代码或日期不符')
-                    break
-                except (httpx.HTTPError, ValueError):
-                    if attempt == 2:
-                        raise RuntimeError(f'ETF补数失败：{api} {symbol}；未写入该证券新数据') from None
+            payload = client.query(api, {'ts_code': symbol, 'start_date': start, 'end_date': target}, fields)
+            data = payload['data']
+            new = pl.DataFrame(data.get('items') or [], schema=data.get('fields') or [], orient='row')
+            if new.is_empty() or new.height >= 2000:
+                raise ValueError('空数据或达到截断门槛')
+            _unique(new)
+            if set(new['ts_code']) != {symbol} or new['trade_date'].max() > target or new['trade_date'].min() < start:
+                raise ValueError('返回代码或日期不符')
             path = cache_dir() / api / f'{symbol}.parquet'
             old = pl.read_parquet(path)
             overlap = old.join(new, on=['ts_code', 'trade_date'], suffix='_new')
